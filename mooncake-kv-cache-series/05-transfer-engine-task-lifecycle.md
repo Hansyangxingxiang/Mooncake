@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 5.1 具体问题
 
 前四篇都在 Store 侧：Master 管元数据，Client 管读写。但数据真正从一台机器搬到另一台机器，靠的是 Transfer Engine（TE）。这一篇回答三个问题：
@@ -45,7 +47,7 @@ getBatchTransferStatus (multi_transport.cpp:363)  ← 聚合整个 batch
 freeBatchID (multi_transport.cpp:108)   ← 全部完成才允许释放
 ```
 
-### 5.3.1 两个核心结构：BatchDesc 与 TransferTask
+### 5.3.3 两个核心结构：BatchDesc 与 TransferTask
 
 TE 的任务状态全部落在这两个结构里（`mooncake-transfer-engine/include/transport/transport.h`）：
 
@@ -83,6 +85,40 @@ struct BatchDesc {
 3. `TransferTask::slice_list` 持有从 `SliceCache` 借来的 `Slice*`，在 `~TransferTask()` 里归还（`transport.h:373` 附近）。slice 的所有权在 TE 内部，不在 `request` 里。
 
 > **分析（推断）**：`request` 用裸指针而不是拷贝，是为了避免每个请求一次分配。代价是把生命周期责任推给调用方，且编译器无法检查。Store 侧的用法是安全的——`TransferSubmitter` 提交后立即 `future->get()` 等待完成，`slices` 在整个调用期间都活着。
+
+### 5.3.1 任务层级与资源边界
+
+```mermaid
+flowchart TB
+    B["BatchDesc / BatchID：批次生命周期"] --> T1["TransferTask 1"]
+    B --> TN["TransferTask N"]
+    T1 --> R["request 指针：引用请求描述"]
+    T1 --> S1["Slice 1"]
+    T1 --> SN["Slice N"]
+    S1 --> W["后端 worker / 异步设备操作"]
+    W --> C["完成计数或后端状态"]
+    C --> Q["状态查询与批次聚合"]
+```
+
+请求描述、数据 buffer 与 batch 的生命周期必须分别管理。提交返回错误也可能已有部分工作进入后端；是否可释放要看已提交工作的结束情况及接口检查，不能仅凭返回码判断。
+
+### 5.3.2 状态与释放：失败不代表所有工作都已停止
+
+```mermaid
+flowchart TD
+    A["分配 BatchID"] --> S["提交请求"]
+    S --> P["查询状态并等待已提交工作收尾"]
+    P --> T{"已提交工作均结束，且满足释放条件？"}
+    T -->|否| P
+    T -->|是| F["调用 freeBatchID"]
+    F --> R{"释放成功？"}
+    R -->|"BatchBusy"| P
+    R -->|是| D["batch 资源回收"]
+    S -.-> E["部分提交错误也进入收尾流程"]
+    E --> P
+```
+
+此图是生命周期流程，不把聚合的 `FAILED`/`TIMEOUT` 直接等同于设备操作已取消。完成的推进方式依后端而异：RDMA 的后台 CQ 轮询与部分异步后端的状态查询不能混为一谈。
 
 ## 5.4 三个关键代码片段
 
@@ -193,13 +229,13 @@ if (success_slice_count + failed_slice_count == task.slice_count) {
 }
 ```
 
-**关键点**：注释明确说明——**必须调用 `transport_->getTransferStatus` 才会触发传输后端的完成轮询**（如 NVLink 异步 transport 在这里 `cudaStreamQuery`）。不调用它，slice 状态永远不会更新，`success/failed_slice_count` 不会变，任务永远停在 WAITING。这就是"异步完成靠轮询驱动"的落点。
+**关键点**：状态查询会委托后端检查或推进完成，例如部分 NVLink 异步路径在这里调用 `cudaStreamQuery`。但不能把该行为推广到所有后端：RDMA 的 CQ 由后台 worker 轮询并更新 slice 状态。应分别说明“设备工作如何推进”和“调用方如何观察完成”。
 
 ## 5.5 完成语义：提交 ≠ 完成
 
 回答开篇问题，TE 的完成语义分两层：
 
-1. **提交成功**（`submitTransfer` 返回 OK）：请求已拆分、绑定 transport、WR 已下发。**不代表数据已到达**。
+1. **提交成功**（`submitTransfer` 返回 OK）：请求已被相应后端接受；可能仍在队列中，不能统一断言 WR 已下发。**不代表数据已到达**。
 2. **传输完成**（`getTransferStatus` 返回 `COMPLETED`）：所有 slice 成功。`getBatchTransferStatus`（`multi_transport.cpp:363`）聚合整个 batch——所有 task 都 `COMPLETED` 才置 `batch_desc.is_finished = true`，并缓存 `finished_transfer_bytes`。
 
 **关键点**：`is_finished` 是 `freeBatchID` 的释放前提。`getBatchTransferStatus` 在全部完成时用 `store(true, release)` 写 `is_finished`，`freeBatchID` 读它判断能否释放。这个 release/acquire 配对保证：**看到 `is_finished=true` 的线程，一定能看到所有 slice 的完成状态**。
@@ -222,7 +258,7 @@ if (success_slice_count + failed_slice_count == task.slice_count) {
 
 `submitTransfer` 中某个 transport 的 `submitTransferTask` 失败，`overall_status` 记录错误，但**其余 transport 仍会继续提交**（`multi_transport.cpp:183` 循环不中断）。调用方需检查 `overall_status` 决定是否重试。
 
-注意这里有一个未定义行为的边界：**已提交到其他 transport 的任务不会被自动取消**。调用方拿到错误的 `overall_status` 后，仍然必须先轮询到 batch 结束、再 `freeBatchID`，直接丢弃 batch 会泄漏。**分析**：TE 没有提供"部分提交后的原子回滚"，因为它跨多个后端，回滚本身就不可靠；把决定权交给调用方是更诚实的做法。
+注意这里有一个部分提交的生命周期边界：**已提交到其他 transport 的任务不会被自动取消**。调用方拿到错误的 `overall_status` 后，仍然必须先轮询到 batch 结束、再 `freeBatchID`，直接丢弃 batch 会泄漏。**分析**：TE 没有提供"部分提交后的原子回滚"，因为它跨多个后端，回滚本身就不可靠；把决定权交给调用方是更诚实的做法。
 
 ### 超出 batch 容量
 
@@ -249,7 +285,7 @@ if (!task_sizes &&
 - **核心逻辑**：`mooncake-transfer-engine/src/multi_transport.cpp` 的 `allocateBatchID`(L93)、`freeBatchID`(L108)、`submitTransfer`(L130)、`getTransferStatus`(L256)、`getBatchTransferStatus`(L363)。
 - **测试**：`mooncake-transfer-engine/tests/multi_transport_batch_test.cpp`（batch 生命周期）、`transfer_metadata_test.cpp`（元数据）、`rdma_transport_submit_task_test.cpp`（提交任务）。
 
-**结论**：TE 的任务生命周期是**分配 → 提交 → 轮询 → 释放**四步。`allocateBatchID` 用指针当 ID，`submitTransfer` 按目标地址选 transport、按 `task_group_id` 分组、按 transport 聚合下发，`getTransferStatus` 委托后端触发完成轮询并叠加超时检查，`getBatchTransferStatus` 聚合整个 batch，`freeBatchID` 在全部完成前拒绝释放。**提交成功 ≠ 传输完成**，完成靠轮询驱动，`is_finished` 的 release/acquire 配对保证释放安全。下一篇深入 RDMA 数据路径，看 WR 如何真正下发。下一篇深入 RDMA 数据路径。
+**结论**：TE 的任务生命周期是**分配 → 提交 → 轮询 → 释放**四步。`allocateBatchID` 用指针当 ID，`submitTransfer` 按目标地址选 transport、按 `task_group_id` 分组、按 transport 聚合下发，`getTransferStatus` 委托后端触发完成轮询并叠加超时检查，`getBatchTransferStatus` 聚合整个 batch，`freeBatchID` 在全部完成前拒绝释放。**提交成功 ≠ 传输完成**，完成由后端机制推进，调用方通过状态接口观察，`is_finished` 的 release/acquire 配对保证释放安全。下一篇深入 RDMA 数据路径，看 WR 如何真正下发。
 
 ---
 

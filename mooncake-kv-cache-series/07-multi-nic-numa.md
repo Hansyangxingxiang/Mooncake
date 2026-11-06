@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 7.1 具体问题
 
 一台机器往往有多张网卡（HCA），内存分布在多个 NUMA 节点。篇6 的 `selectDevice` 选 HCA，这一篇回答四个问题：
@@ -59,6 +61,44 @@ rail paused? → 换 alt_dev_id                    worker_pool.cpp:231
    ▼
 performPostSend → 建连 → WR
 ```
+
+### 7.3.1 NUMA 拓扑：优先选择亲和路径
+
+```mermaid
+flowchart LR
+    subgraph N0["NUMA 节点 0（示意）"]
+        C0["CPU / DRAM 0"] --- P0["PCIe 路径 0"]
+        P0 --- G0["GPU 0（可选）"]
+        P0 --- H0["NIC 0"]
+    end
+    subgraph N1["NUMA 节点 1（示意）"]
+        C1["CPU / DRAM 1"] --- P1["PCIe 路径 1"]
+        P1 --- G1["GPU 1（可选）"]
+        P1 --- H1["NIC 1"]
+    end
+    C0 -.->|"跨 NUMA 访问"| C1
+    H0 ==>|"网络"| Peer["远端 NIC / 内存"]
+    H1 ==>|"网络"| Peer
+```
+
+本图是亲和关系示意，不代表每台机器的实际 PCIe 布线。优先路径取决于发现的拓扑与地址注册情况；跨 NUMA 路径可能增加访问成本，但不能仅凭拓扑图量化吞吐损失。
+
+### 7.3.2 两层选择与故障降级
+
+```mermaid
+flowchart TD
+    R["Transfer request"] --> T["按协议、设备与同机条件选 transport"]
+    T --> H["按 location 与亲和矩阵选 HCA / rail"]
+    H --> V{"地址注册、rkey、context 与连接可用？"}
+    V -->|是| P["提交传输"]
+    V -->|否| A{"存在可重试路径且未超限？"}
+    A -->|是| U["按失败原因刷新描述或更换路径"]
+    U --> H
+    A -->|否| E["记录 slice 失败"]
+    E -.-> F["满足故障阈值时更新本地 context 与发布拓扑"]
+```
+
+更换 HCA/rail 与切换 transport 是不同层次，图中不暗示任意 RDMA 故障都能自动降级成 TCP。HCA 索引需保持稳定，更新可用集合时不能任意压缩已有索引。
 
 ## 7.4 三个关键代码片段
 

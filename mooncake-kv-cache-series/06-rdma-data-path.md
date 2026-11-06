@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 6.1 具体问题
 
 篇5 看到 `submitTransferTask` 把任务交给 transport。这一篇深入 RDMA 后端，回答三个问题：
@@ -59,6 +61,48 @@ getTransferStatus (rdma_transport.cpp:998)   ← 轮询聚合
    ▼
 is_finished = true → freeBatchID 可释放
 ```
+
+### 6.3.1 双端交互：建连与数据传输分开看
+
+```mermaid
+sequenceDiagram
+    participant A as 本地 TE
+    participant M as 连接元数据 / 握手机制
+    participant B as 远端 TE
+    participant N as RNIC
+    A->>A: 注册本地内存，获得本地访问凭据
+    B->>B: 注册远端内存，生成远端访问描述
+    B->>M: 发布或交换 segment 与连接信息
+    A->>M: 获取远端描述
+    M-->>A: 地址、rkey 与连接信息
+    A->>B: QP 握手与连接参数交换
+    Note over A,B: 数据操作前完成所需 QP 状态转换；连接可复用
+    A->>N: post WR：地址、长度与访问凭据
+    N->>B: RDMA READ / WRITE 数据操作
+    N-->>A: 本地 CQE
+    A->>A: 后台轮询 CQ，更新 slice 完成状态
+```
+
+握手机制可能来自独立元数据服务或直接握手配置，图中合并为一个逻辑角色。CQE 是传输完成证据，不是 Store 对象可见性的提交；PutEnd 仍由 Store 层负责。
+
+### 6.3.2 队列流水线：背压与错误走不同出口
+
+```mermaid
+flowchart LR
+    S["Slice 待发送"] --> D["选择 rail 与 endpoint"]
+    D --> Q{"QP / CQ 额度可用？"}
+    Q -->|否| W["保留待发，后续重试"]
+    W --> D
+    Q -->|是| P["构造 WR 并 post_send"]
+    P --> C["后台 poll CQ"]
+    C --> R{"CQE 成功？"}
+    R -->|是| OK["更新成功计数"]
+    R -->|否| E["按错误策略重试或记录失败"]
+    OK --> T["Task 状态聚合"]
+    E --> T
+```
+
+资源额度不足是背压，不能直接记成传输失败。连接建立、WR 提交和 CQE 回收分别占据流水线的不同位置，排障时也应分别观察。
 
 ## 6.4 三个关键代码片段
 

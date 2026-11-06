@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 10.1 具体问题
 
 前九篇都在 Mooncake 内部。这一篇从推理框架的入口切进来，回答四个问题：
@@ -28,14 +30,16 @@
 - **配置**：`MOONCAKE_CONFIG_PATH` 指向 JSON，核心字段是 `metadata_server`、`master_server_address`、`global_segment_size`、`local_buffer_size`、`protocol`（`kv-cache-storage.md:56`–`:68`）。`protocol` 取 `rdma` 或 `tcp`（`:210`）。PD 侧另有 `VLLM_MOONCAKE_BOOTSTRAP_PORT`（默认 8998）和 `VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT`（默认 480s）（`disagg-prefill-decode.md:129`、`:133`）。
 - **主路径**：vLLM connector → `batch_get_tensor_metadata_prefixes`（`store_py.cpp:743`）/ `get_tensor_into`（`:662`）/ `put_tensor_from`（`:1205`）→ `RealClient::get_into_ranges`（`real_client.cpp:4010`）/ `put_from` → Master + TE。
 
-## 10.3 调用链图
+> **证据边界**：本篇未固定 vLLM commit，未验证外部 connector 调用链。下文张量 API、header 与 TP 分片代码展示 Mooncake 提供的能力，不代表某个 vLLM 版本一定使用这些接口。跨实例 key 兼容、哈希种子要求与失败回退均须结合具体 connector 版本核实。
+
+## 10.3 Mooncake 侧接口路径（connector 实际调用待核实）
 
 ```
 vLLM 请求
    │  scheduler 按 block hash 链查本地 prefix cache
    │  未命中 → connector 向 Mooncake Store 查/读
    ▼
-MooncakeStoreConnector（vLLM 仓库，不在本 tag）
+Connector 接入示意（vLLM 实际 API 选择待核实）
    │
    ├─ 探测：batch_get_tensor_metadata_prefixes (store_py.cpp:743)
    │    └─ get_into_ranges(..., sizeof(TensorMetadata))   :775
@@ -57,6 +61,45 @@ KV block 进入 vLLM 的 paged KV cache
    ▼
 命中前缀的 token 不再做 attention 前向 → 只算未命中后缀
 ```
+
+### 10.3.1 职责边界：Store 共享缓存与 PD 直传
+
+```mermaid
+flowchart TB
+    V["vLLM：调度、block hash、KV 布局"] --> C["Connector：适配与完成通知"]
+    C --> S["MooncakeStoreConnector：共享池路径"]
+    C --> P["MooncakeConnector：PD 直传路径"]
+    S -.-> M["Master：key、副本与 lease"]
+    S --> T["Store / Transfer Engine：按 key 读写字节"]
+    P --> D["Transfer Engine：按请求传输 KV"]
+    T ==> Pool["共享内存 / SSD 资源池"]
+    D ==> Peer["对端推理实例"]
+```
+
+图示依据本仓库集成文档区分职责。两个 connector 的实际调用方式、buffer 布局与调度回调必须按 vLLM 的具体版本核实；不能用一个 Python 绑定函数的存在证明 connector 一定调用它。
+
+### 10.3.2 Store 接入的逻辑时序与待核实边界
+
+```mermaid
+sequenceDiagram
+    participant V as vLLM 调度 / worker
+    participant C as Connector（外部仓库）
+    participant S as Mooncake Store
+    V->>C: 查询可复用的外部 KV
+    C->>S: 按 key 探测（具体 API 待绑定 vLLM 版本）
+    S-->>C: 可读性 / 元数据结果
+    alt 选择加载外部 KV
+        C->>S: 发起数据读取
+        S-->>C: 数据与读取结果
+        C->>C: 检查结果，完成必要的布局转换与设备同步
+        C-->>V: 通知可使用的 KV 范围
+    else 未命中或加载失败
+        C-->>V: 按 connector 契约报告未加载范围或失败
+        Note over V,C: 重试、重算及请求恢复策略需核实对应 vLLM 实现
+    end
+```
+
+此图是共享 Store 的逻辑契约，不是已验证的 vLLM 函数调用链。读取完成、GPU 数据可用和 scheduler 允许复用可能是不同事件；PD 直传另有请求与握手生命周期。
 
 ## 10.4 三个关键代码片段
 
@@ -81,13 +124,13 @@ results = store_->get_into_ranges(buffers, all_keys, all_dst_offsets,
                                   all_src_offsets, all_sizes, nullptr);  // :775
 ```
 
-**关键点**：每个 key 只读 `sizeof(TensorMetadata)` 字节，源偏移固定为 0。这个固定偏移是 schema 保证的：`ValidateTensorMetadata` 要求 `data_offset >= sizeof(TensorMetadata)`（`integration_utils.h:335`），所以对象开头必然是完整 header，不会读到"半个头 + 一点数据"。命中判定因此是"**key 存在 + header 合法**"，不需要把整个 block 搬回来。`get_into_ranges` 走的是篇3 的 ranged read：Master 返回副本描述符与 lease，TE 只传请求的字节区间。**分析（推断）**：这是把"存在性查询"和"数据读取"解耦——查询走最短传输，确认命中后再发一次全量读；代价是命中路径两次 RPC、两次 lease，但避免了未命中时白读几十 MB。
+**关键点**：每个 key 只读 `sizeof(TensorMetadata)` 字节，源偏移固定为 0。这个固定偏移是 schema 保证的：`ValidateTensorMetadata` 要求 `data_offset >= sizeof(TensorMetadata)`（`integration_utils.h:335`），所以对象开头必然是完整 header，不会读到"半个头 + 一点数据"。命中判定因此是"**key 存在 + header 合法**"，不需要把整个 block 搬回来。`get_into_ranges` 走的是篇3 的 ranged read：Master 返回副本描述符与 lease，TE 只传请求的字节区间。**分析（推断）**：这是把"存在性查询"和"数据读取"解耦——查询走最短传输，确认命中后再发一次全量读；代价是命中后还需全量读取及相应元数据操作；具体 RPC 数受批量与元数据复用方式影响。收益是以较少字节检查可读性与格式，不能说它避免了读取不存在对象的完整数据。
 
 注意这里没有单独的 `exists` API。原因是对象的存在性在分布式 Store 里不是稳定事实：查询返回"存在"，下一秒可能被淘汰。用"能读出合法 header"当判据，把存在性和可读性合并成一次有 lease 保护的操作，比 `exists` 更接近真实语义。**观点**：对 KV Cache 这种"读失败可以重算"的负载，这是正确的取舍——不值得为 `exists` 引入两阶段锁。
 
 ### 片段2：读回张量——GIL 之外的拷贝（`store_py.cpp:662`）
 
-确认命中后，connector 用 `get_tensor_into` 把 block 直接读进调用方预分配的 buffer：
+`get_tensor_into` 提供把对象读入调用方预分配 buffer 的能力；connector 是否采用该接口、buffer 是否为最终 GPU KV 落点，需要另外核实：
 
 ```cpp
 // store_py.cpp:662
@@ -106,7 +149,7 @@ pybind11::object get_tensor_into(const std::string &key,
 }
 ```
 
-**关键点**：`gil_scoped_release` 覆盖整个 `get_into`，传输期间不占 Python 解释器；多个 worker 才能并发发起读。`buffer_to_tensor`（`:167`）在返回前重新解析 header 并校验 `data_offset + data_bytes == total_length`，任何不一致都返回 `None` 而不是半个张量。失败时 `get_into` 返回负的错误码，`buffer_to_tensor` 走 `data_length < 0` 分支打日志并返回 `None`（`:198`–`:205`）。**因此 connector 侧的统一处理是"拿不到对象就重算"，不需要区分 `OBJECT_NOT_FOUND` 和 `LEASE_EXPIRED`。**
+**关键点**：`gil_scoped_release` 覆盖整个 `get_into`，传输期间不占 Python 解释器；多个 worker 才能并发发起读。`buffer_to_tensor`（`:167`）在返回前重新解析 header 并校验 `data_offset + data_bytes == total_length`，任何不一致都返回 `None` 而不是半个张量。失败时 `get_into` 返回负的错误码，`buffer_to_tensor` 走 `data_length < 0` 分支打日志并返回 `None`（`:198`–`:205`）。**这只能证明该绑定接口的错误返回被转换为 `None`；connector 是否重试、重算或终止请求，必须核对对应 vLLM 版本的实现。**
 
 ### 片段3：写入——buffer 里必须自带 header（`store_py.cpp:1205`）
 
@@ -159,19 +202,19 @@ struct TensorMetadata {
 | 探测命中、读回、写回 | connector + `store_py.cpp` | 本篇片段1–3 |
 | 决定哪些 token 跳过前向 | vLLM scheduler | vLLM 侧实现 |
 
-**关键点**：Mooncake 对"前缀"没有任何感知。它看到的是 connector 给的一串 key，值是一段带 `TensorMetadata` 头的字节。所谓"跨实例前缀缓存"，本质是**多个 vLLM 实例用相同的哈希算法算出相同的 key，于是命中同一个 Store 对象**。`kv-cache-storage.md:143` 的提醒正说明这一点：DP 部署必须设固定 `PYTHONHASHSEED`，否则相同 prompt 在不同 rank 算出不同块哈希，"相同 key"这个前提就不成立（`:149`）。
+**关键点**：Mooncake 对"前缀"没有任何感知。它看到的是 connector 给的一串 key，值是一段带 `TensorMetadata` 头的字节。所谓"跨实例前缀缓存"，本质是**多个 vLLM 实例用相同的哈希算法算出相同的 key，于是命中同一个 Store 对象**。`kv-cache-storage.md:143` 的提醒正说明这一点：文档所述依赖 Python 哈希种子的 DP 部署需要固定 `PYTHONHASHSEED`（`:149`）；该要求是否适用于其他哈希算法或版本，应单独核实。
 
-由此可以回答"如何减少 Prefill"：
+以下是共享缓存减少 Prefill 的逻辑过程，具体 API 选择与同步点仍需 vLLM 侧证据：
 
 1. 请求进入 vLLM，scheduler 先查本地 prefix cache；
 2. 本地没有的 block，connector 按块哈希向 Store 探测（片段1），只读 header；
-3. 命中则 `get_tensor_into` 把 KV 读进 paged KV cache（片段2），未命中则正常计算；
-4. 计算完成后，新产生的 KV block 通过 `put_tensor_from` 回写 Store（片段3），供后续请求或其他实例复用；
+3. 命中后经 connector 加载、完成必要转换并同步，再由调度器决定可复用的 KV 范围；
+4. 计算完成后，新产生的 KV block 通过 connector 选定的写入接口回写 Store（片段3展示其中一种能力），供后续请求或其他实例复用；
 5. **命中的 block 已有 K/V，attention 不再为这些 token 做前向**；prefill 只覆盖未命中的后缀。
 
-**分析（推断）**：命中粒度是"连续前缀"，所以最坏情况是第 0 个 block 就不同，此时探测只浪费一次 header 读；最好情况是整段 prompt 命中，prefill 只剩采样前的收尾。这也是为什么探测要便宜——它的期望收益与命中长度成正比，但成本必须与 prompt 长度无关。
+**成本边界**：连续前缀复用的收益与可复用 token 数有关，但探测成本不一定与 prompt 长度无关。这里的批量接口按传入 key 数分配空间并读取 header；RPC 轮数、传输字节量和本地处理复杂度需要分别计算。是否遇到第一个 miss 就停止后续探测，应检查 connector 的实际调用方式。
 
-这里刻意用 `get_tensor_into` 而不是 `get_tensor`：后者由绑定层 `get_buffer` 分配 `BufferHandle`，再包装成 Python 张量（`store_py.cpp:634`–`:638`）；前者把数据直接写进调用方预分配的地址，读的落点就是最终存放点。**分析（推断）**：对 paged KV cache 这种地址固定的结构，直接写入省掉一次分配和一次拷贝；代价是绑定层只能用 `size` 做上限，buffer 是否够大由调用方保证。**观点**：这是把"内存所有权"留在推理引擎侧的正确做法——Store 不该替框架决定 KV block 的内存布局。
+这里刻意用 `get_tensor_into` 而不是 `get_tensor`：后者由绑定层 `get_buffer` 分配 `BufferHandle`，再包装成 Python 张量（`store_py.cpp:634`–`:638`）；前者把数据写进调用方预分配的地址；是否还需复制或布局转换，取决于调用方内存类型与 connector 实现。**分析（条件）**：如果目标 buffer 确实是可直接复用的最终布局，直接写入可减少额外分配与拷贝；代价是绑定层只能用 `size` 做上限，buffer 是否够大由调用方保证。**观点**：这是把"内存所有权"留在推理引擎侧的正确做法——Store 不该替框架决定 KV block 的内存布局。
 
 Mooncake 在这里的另一个贡献是**容量与介质分层**：`kv_both` 下 block 可以下沉到本地 SSD（篇9），命中时再 promotion 回内存；PD 分离下 `MooncakeConnector` 用 RDMA 直传，文档给出的峰值是 142.25 GB/s（`disagg-prefill-decode.md:5`）。**这是两条不同的数据路径**：前者是"共享池 + 按 key 查"，后者是"点对点 + 按请求传"，`MultiConnector` 让同一实例同时具备两者。
 
@@ -179,11 +222,11 @@ Mooncake 在这里的另一个贡献是**容量与介质分层**：`kv_both` 下
 
 ### 未命中与读失败
 
-未命中不是错误：探测返回 `nullopt`，connector 直接走正常 prefill。读失败（对象被淘汰、lease 过期、副本不可达）在 Python 侧统一表现为 `None`（`store_py.cpp:198`–`:205`），connector 同样退化为"重算这段前缀"。**关键点**：重算的代价是算力，不是正确性——所以这条路径不需要重试，也不该阻塞请求。
+未命中与加载失败需要分别处理。本节展示的 Python 绑定会把相应失败转换成 `None`（`store_py.cpp:198`–`:205`），但这不足以证明 vLLM 已实现透明回退。应核对 connector 如何报告未加载块、scheduler 是否重新安排计算，以及异步加载失败后是否会使用部分写入的 KV。重试与重算是上层策略，不能从绑定返回值推导为“无需重试”。
 
 ### 块哈希不一致
 
-DP 未设 `PYTHONHASHSEED` 时，相同 prompt 在不同 rank 得到不同块哈希，跨实例命中率归零（`kv-cache-storage.md:143`–`:149`）。这是配置错误，不是代码缺陷，但表现得很像"缓存不工作"，排查时应先确认它。
+对文档所述依赖 Python 哈希种子的实现，跨进程未统一 `PYTHONHASHSEED` 可能使相同内容产生不兼容的 key，破坏跨实例复用（`kv-cache-storage.md:143`–`:149`）。应先检查实际哈希算法与命名空间，不能对所有版本断言“命中率归零”。
 
 ### TP / 分片布局
 
@@ -203,7 +246,9 @@ PD 场景下 `VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT` 默认 480 秒（`disagg-pref
 
 ### 性能预期
 
-文档给出的对照是：相对 Redis 后端，2P2D、tp=2、RDMA 下平均 TTFT 改善约 32%（`kv-cache-storage.md:7`）；PD 直传峰值 142.25 GB/s，约 8×RoCE 的 71.1% 利用率（`disagg-prefill-decode.md:5`）。**观点**：这两个数字回答的是不同问题——TTFT 改善来自"少算 prefill + 少走 Redis 的拷贝路径"，带宽数字来自"TE 的 RDMA 路径"；把它们当成同一个收益来源会高估任一单项。
+判断一次加载是否值得，可以先比较：`探测耗时 + KV 加载耗时 + 必要的布局转换与设备同步耗时 < 重算对应前缀的耗时`。对象大小、可复用前缀长度、介质、并发与有效带宽都会改变结果；需要按相同工作负载测量。
+
+文档给出的对照是：相对 Redis 后端，2P2D、tp=2、RDMA 下平均 TTFT 改善约 32%（`kv-cache-storage.md:7`）；PD 直传峰值 142.25 GB/s，约 8×RoCE 的 71.1% 利用率（`disagg-prefill-decode.md:5`）。这两个数字来自不同实验，不能相互替代；缺少硬件、模型、负载、命中率、并发和软件版本条件时，只能作为原文报告值。没有消融实验，不能把 TTFT 改善确定归因于某次拷贝优化。
 
 ## 10.7 验证与结论
 
@@ -213,7 +258,7 @@ PD 场景下 `VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT` 默认 480 秒（`disagg-pref
 - **集成文档**：`docs/source/deployment/integrations/vllm/kv-cache-storage.md` 的能力声明(`L5`)、TTFT 对照(`L7`)、V1 容错(`L25`)、块哈希前缀缓存(`L34`)、配置(`L56`–`:68`)、`kv_both`(`L78`)、XpYd(`L83`–`:128`)、DP 哈希种子(`L143`–`:149`)、`protocol`(`L210`)、V0 限制(`L312`)；`disagg-prefill-decode.md` 的带宽(`L5`)、角色(`L122`–`:124`)、`BOOTSTRAP_PORT`(`L129`)、`ABORT_REQUEST_TIMEOUT`(`L133`)、端口间隔(`L204`/`L263`)。
 - **测试**：`mooncake-integration/tests/`、`python/tests/integration/`。注意 connector 本身在 vLLM 仓库，本 tag 无法引用其实现代码。
 
-**结论**：vLLM 通过 connector 接入 Mooncake，但**两侧职责必须分开**——vLLM 负责切 block、算前缀链哈希、决定哪些 token 跳过前向；Mooncake 负责按 key 存字节、管副本与 lease、提供廉价探测。命中路径是"只读 `TensorMetadata` header 探测 → `get_tensor_into` 全量读回 → 复用 KV block"，写入路径是"buffer 自带 `[TensorMetadata][data]` 头 → `put_from`"。Mooncake 对"前缀"零感知，跨实例命中靠的是相同哈希算法产出相同 key；`PYTHONHASHSEED` 不一致会让命中率归零。失败一律退化为重算，因为对 KV Cache 来说算力比正确性便宜。**前缀命中减少的是 prefill 的 token 数，不是 prefill 这个阶段本身**——整段命中才会接近跳过。至此，从 Store 到 TE 再到推理请求的完整链路已经串通：篇2/篇3 的 Put/Get，篇5–7 的传输，篇8/篇9 的生命周期与分层，最终都汇入这一次 block 级复用。
+**结论**：vLLM 通过 connector 接入 Mooncake，但**两侧职责必须分开**——vLLM 负责切 block、算前缀链哈希、决定哪些 token 跳过前向；Mooncake 负责按 key 存字节、管副本与 lease、提供廉价探测。本文展示的 Mooncake 张量接口可组成“header 探测 → 全量读取”的路径，以及“带 header 的 buffer → put_from”的写入路径；实际 vLLM connector 是否采用这些接口，尚需固定版本核实。Mooncake 对"前缀"零感知，跨实例命中靠的是相同哈希算法产出相同 key；依赖 Python 哈希种子的实现还需统一相应种子。绑定层可以报告加载失败；是否退化为重算及如何保证失败后的正确性，需要对应 vLLM connector 与 scheduler 的证据。**前缀命中减少的是 prefill 的 token 数，不是 prefill 这个阶段本身**——整段命中才会接近跳过。从概念上，Store、TE 与推理请求可连接为以下链路；外部集成仍待具体版本证据：篇2/篇3 的 Put/Get，篇5–7 的传输，篇8/篇9 的生命周期与分层，最终都汇入这一次 block 级复用。
 
 ---
 
