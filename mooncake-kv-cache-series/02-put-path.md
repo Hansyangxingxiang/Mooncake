@@ -6,155 +6,256 @@
 
 ## 2.1 具体问题
 
-客户端 Put 返回成功时，另一个客户端是否已经可以读取？**可见性**是这一篇的核心。Mooncake 用两阶段 Put（`PutStart` → 写数据 → `PutEnd`）保证：`PutEnd` 之前对象不可读，防止脏读。
+客户端 Put 返回成功的那一刻，另一个客户端是否已经能读取？如果不能，差在哪里？
+
+这个问题问的是**可见性**。它容易被含糊带过："Put 完了就能读"。但"写完"至少有三种含义——数据到了远端内存、Master 记下了位置、对象状态允许读。三者不是同一时刻。本篇沿 `Client::Put` 追这条链，给出每个阶段的准确边界。
 
 ## 2.2 场景与版本
 
-- **场景**：客户端 A 把一个 KV Cache 对象写入分布式内存，客户端 B 随后读取。Put 返回成功的那一刻，B 能否读到完整数据？
+- **场景**：客户端 A Put 一个 KV Cache 对象，客户端 B 随后 Get。A 与 B 可以是同一进程、同机不同进程，或跨机。
 - **版本**：`v0.3.13.post1`。
-- **主路径**：`Client::Put`（`client_service.cpp:1853`）→ `MasterService::PutStart`（`master_service.cpp:4292`）→ `TransferWrite`（`client_service.cpp:4479`）→ `DetermineFinalizeDecision`（`client_service.cpp:332`）→ `MasterService::PutEnd`（`master_service.cpp:4509`）。
+- **配置基线**：默认 `ReplicateConfig`（`replica_num = 1`，无 NoF/DFS 副本），传输后端 `tcp`。多副本与双副本模式的差异在 2.6 单独说明。
+- **主路径**：`Client::Put`（`client_service.cpp:1853`）→ `MasterService::PutStart`（`master_service.cpp:4292`）→ `AllocateAndInsertMetadata`（`master_service.cpp:4021`）→ `TransferWrite`（`client_service.cpp:4479`）→ `DetermineFinalizeDecision`（`client_service.cpp:332`）→ `MasterService::PutEnd`（`master_service.cpp:4509`）。
 
 ## 2.3 调用链图
 
 ```
-Client::Put (client_service.cpp:1853)
-   │
-   ├─ 1. master_client_.PutStart(key, slice_lengths, config)   ← 空间申请
-   │      └─ MasterService::PutStart (master_service.cpp:4292)
-   │            └─ AllocateAndInsertMetadata (master_service.cpp:4021)
-   │                  └─ allocation_strategy_->Allocate(...)   ← 副本位置选择
-   │                        └─ offset_allocator 分配 segment+offset
-   │
-   ├─ 2. TransferWrite(replica, slices)  (client_service.cpp:4479)  ← 数据路径
-   │      └─ TransferData → TransferEngine::submitTransfer
-   │            └─ 远端 Client 内存 (RDMA/TCP)
-   │
-   └─ 3. DetermineFinalizeDecision(config, transfer_summary)  ← 失败处理
-         ├─ 成功 → master_client_.PutEnd(...)   ← 提交元数据，对象可见
-         └─ 失败 → master_client_.PutRevoke(...) ← 撤销，对象不可见
+Client::Put                                        client_service.cpp:1853
+  │
+  ├─① PutStart(key, slice_lengths, config)         :1882
+  │     └─ MasterService::PutStart                 master_service.cpp:4292
+  │          └─ AllocateAndInsertMetadata          master_service.cpp:4021
+  │               ├─ allocation_strategy_->Allocate        :4098
+  │               │     └─ 选 segment + offset（按 slice 分散）
+  │               ├─ replicas 初始状态 = PROCESSING
+  │               └─ metadata.emplace(key, ...)  ← 记录 client_id/状态
+  │
+  ├─② 写数据
+  │     ├─ 磁盘副本优先：PutToLocalFile            :1907 起
+  │     └─ 内存/NoF 副本：TransferWrite            :1922 / :4479
+  │           └─ TransferData                     :4250
+  │                 └─ TransferSubmitter::submit → future->get()
+  │
+  └─③ DetermineFinalizeDecision                    :1967
+        ├─ PutEnd(replica_type)    对象可见
+        └─ PutRevoke(replica_type) 对象不可见
 ```
 
 ## 2.4 三个关键代码片段
 
-### 片段1：Client::Put 的主流程（`client_service.cpp:1853`）
+### 片段1：Client::Put 的三段结构与磁盘优先
 
-Put 的核心是"先申请空间，再写数据，最后提交"。注意 `PutStart` 返回的 `replica_list` 就是 Master 分配好的副本位置：
+`PutStart` 返回的是**已分配好的副本描述**，不是"稍后告诉你"：
 
 ```cpp
-// client_service.cpp:1882  ① 空间申请
+// mooncake-store/src/client_service.cpp:1882
 auto start_result = master_client_.PutStart(key, slice_lengths, client_cfg);
 if (!start_result) {
-    if (err == ErrorCode::OBJECT_ALREADY_EXISTS) return {};  // 已存在视为成功
+    ErrorCode err = start_result.error();
+    if (err == ErrorCode::OBJECT_ALREADY_EXISTS) {
+        VLOG(1) << "object_already_exists key=" << key;
+        return {};                                   // 幂等成功
+    }
+    if (err == ErrorCode::NO_AVAILABLE_HANDLE) { ... }
     return tl::unexpected(err);
 }
+```
 
-// client_service.cpp:1922  ② 数据路径：对每个内存/NoF 副本做传输
+随后按副本类型分别写。注意**磁盘副本先写**，源码给了理由：
+
+```cpp
+// mooncake-store/src/client_service.cpp:1907
+// We must deal with disk replica first, then the disk putrevoke/putend can
+// be called surely
+if (storage_backend_) {
+    for (auto it = start_result.value().rbegin(); ...; ++it) {
+        if (replica.is_disk_replica()) {
+            PutToLocalFile(key, slices, replica.get_disk_descriptor());
+            break;                                 // 只写一个磁盘副本
+        }
+    }
+}
+
+// client_service.cpp:1922  内存 / NoF 副本
 for (const auto& replica : start_result.value()) {
     if (replica.is_memory_replica() || replica.is_nof_replica()) {
         ErrorCode transfer_err = TransferWrite(replica, slices);
         if (transfer_err != ErrorCode::OK) {
             transfer_summary.RecordFailure(replica_type, transfer_err);
-            continue;   // 部分副本失败，继续尝试其他副本
+            continue;                              // 单个失败不中断
         }
         transfer_summary.RecordSuccess(replica_type);
     }
 }
-
-// client_service.cpp:1967  ③ 失败处理 + 提交
-const auto finalize_decision = DetermineFinalizeDecision(config, transfer_summary);
-if (finalize_decision.end_type.has_value()) {
-    auto end_result = master_client_.PutEnd(ObjectMeta{key, object_checksum},
-                                            *finalize_decision.end_type);
-    ...
-}
-if (finalize_decision.revoke_type.has_value()) {
-    auto revoke_result = master_client_.PutRevoke(key, *finalize_decision.revoke_type);
-    ...
-}
-if (!finalize_decision.success) return tl::unexpected(finalize_decision.error);
-return {};
 ```
 
-### 片段2：Master 的 PutEnd 让对象可见（`master_service.cpp:4509`）
+**输入/输出**：输入是切片后的 `slices`（`real_client.cpp:4209`）和 Master 给的副本；输出是一个 `TransferResultSummary`，记录成功/失败计数和第一个错误。**所有权**：slice 指向调用方 buffer，传输期间调用方不得释放。
 
-`PutEnd` 把 `PROCESSING` 状态的副本标记为 `COMPLETE`，这一步就是**可见性**的开关：
+### 片段2：分配与初始状态——`PROCESSING` 是可见性闸门
+
+`AllocateAndInsertMetadata` 在同一个临界区里完成三件事：查重、分配、插入：
 
 ```cpp
-// master_service.cpp:4574  把 processing 副本标记为 complete
+// mooncake-store/src/master_service.cpp:4021（节选）
+if (tenant_state.metadata.contains(key)) {
+    return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
+}
+
+auto allocation_result = allocation_strategy_->Allocate(
+    allocator_access, value_length, config.replica_num,
+    preferred_segments, std::set<std::string>(), ReplicaType::MEMORY);
+...
+// 磁盘副本同样以 PROCESSING 插入
+replicas.emplace_back(file_path, value_length, ReplicaStatus::PROCESSING);
+
+auto [it, inserted] = tenant_state.metadata.emplace(...);
+if (!inserted) {
+    LOG(INFO) << "key=" << key << ", info=object_already_exists";
+    refund_pending_quota();
+    return tl::make_unexpected(ErrorCode::OBJECT_ALREADY_EXISTS);
+}
+tenant_state.processing_keys.insert(key);
+```
+
+**关键点**：对象在 `PutStart` 就已经进入 Master 的元数据表了，但所有副本都是 `PROCESSING`。读方此时查得到对象吗？查得到，但拿不到可读副本——因为 `GetReplicaList` 只返回 `IsReplicaReadable` 的副本，而 `PROCESSING` 不算可读（见 2.5）。
+
+### 片段3：`PutEnd`——把 PROCESSING 翻成 COMPLETE
+
+`PutEnd` 是可见性的开关：
+
+```cpp
+// mooncake-store/src/master_service.cpp:4509（节选）
+if (client_id != metadata.client_id) {
+    return tl::make_unexpected(ErrorCode::ILLEGAL_CLIENT);   // :4522
+}
+if (!accessor.InProcessing()) {
+    // :4551 重试：若目标副本已全部 COMPLETE，视为 no-op
+    ...
+    return {};
+}
 metadata.VisitReplicas(
     [&is_target_replica](const Replica& replica) {
         return replica.is_processing() && is_target_replica(replica);
     },
-    [this, &key, &metadata, &completed_pending_replica](Replica& replica) {
-        if (replica.is_processing() && metadata.PendingSoftPinOwnsReplica(replica.id())) {
-            completed_pending_replica = true;
-        }
-        replica.mark_complete();   // ← 副本变为 COMPLETE，对象可读
+    [this, &key, &metadata](Replica& replica) {
+        replica.mark_complete();                             // :4574 起
         ...
     });
 ```
 
-`PutEnd` 还校验：只有发起 `PutStart` 的 client 才能 `PutEnd`（`client_id != metadata.client_id` 返回 `ILLEGAL_CLIENT`，`master_service.cpp:4522`），防止别的客户端篡改。
+`PutEnd` 只影响 `PROCESSING` 且属于 `replica_type` 的副本；已经 `COMPLETE` 的不动。这样重试安全，也不会误改其他路径正在推进的副本。
 
-### 片段3：副本位置选择（`master_service.cpp:4098`）
+## 2.5 可见性语义：Put 返回成功 = 对象可读，但成立条件要说全
 
-Master 通过 `allocation_strategy_->Allocate` 决定副本放在哪些 segment。分配策略保证**同一对象的每个 slice 放在不同 segment**（best-effort）：
+副本状态机比"INIT → PROCESSING → COMPLETE"更完整（`mooncake-store/include/replica.h:52`）：
 
 ```cpp
-// master_service.cpp:4098  内存副本分配
-auto allocation_result = allocation_strategy_->Allocate(
-    allocator_access, value_length, config.replica_num,
-    preferred_segments, std::set<std::string>(), ReplicaType::MEMORY);
-if (!allocation_result.has_value()) {
-    if (allocation_result.error() == ErrorCode::INVALID_PARAMS) {
-        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
+enum class ReplicaStatus {
+    UNDEFINED = 0,   // 未初始化
+    INITIALIZED,     // 已分配空间，等待写入
+    PROCESSING,      // 写入进行中
+    COMPLETE,        // 写入完成，可读
+    REMOVED,         // 已移除
+    FAILED,          // 失败（可用于重新分配）
+};
+```
+
+读路径的过滤在 Master：
+
+```cpp
+// master_service.cpp:3546
+bool MasterService::IsReplicaReadable(const Replica& replica) const {
+    if (!replica.is_completed() || replica.has_invalid_mem_handle() ||
+        replica.has_invalid_nof_handle()) {
+        return false;
     }
-    need_mem_eviction_ = true;   // 空间不足，触发淘汰
-    return tl::make_unexpected(ErrorCode::NO_AVAILABLE_HANDLE);
+    ...  // 再排除 endpoint 已被标记失效的副本
 }
 ```
 
-## 2.5 可见性语义：Put 返回成功 = 对象可读
+于是可以精确回答开篇问题：
 
-回答开篇问题：**Put 返回成功时，另一个客户端已经可以读取**。原因：
+1. **`PutStart` 之后、`PutEnd` 之前**：对象存在，但副本是 `PROCESSING`。`GetReplicaList` 返回 `REPLICA_IS_NOT_READY`，不是"对象不存在"。读方读不到，但知道它还在写。
+2. **`PutEnd` 成功之后**：目标副本变 `COMPLETE`，`GetReplicaList` 开始返回它。从这一刻起另一个客户端可以读。
+3. **`Client::Put` 返回成功**：发生在 `PutEnd` 返回之后。所以**Put 成功返回时，对象确实已经可读**——可见性早于返回，不是同时。
 
-1. `Client::Put` 只有在 `DetermineFinalizeDecision` 判定 `success=true` 且 `PutEnd` 成功后才返回 `{}`（成功）。
-2. `PutEnd` 把副本标记为 `COMPLETE`，此后 `GetReplicaList` 才会返回该副本，其他客户端才能读到。
-3. 若 `PutEnd` 失败，`Client::Put` 返回错误，调用方知道 Put 未完成。
+> **分析（推断）**：因此存在一个短暂窗口：`PutEnd` 已生效、`Client::Put` 尚未返回，此时读方已经能读。反过来不存在"Put 返回成功但读不到"的窗口，除非 `PutEnd` 之后的元数据传播有延迟——本版本里读方每次 Get 都查 Master，没有本地缓存，所以这个窗口为零。
 
-**关键点**：网络传输完成 ≠ 对象写入成功。`TransferWrite` 只是把数据搬到远端内存，真正让对象"可见"的是 Master 的 `PutEnd`。这就是两阶段 Put 的意义——防止其他客户端读到半写状态。
+**网络传输完成 ≠ 对象写入成功**。`TransferWrite` 返回 `OK` 只说明数据到了远端内存段；让对象可读的是 `PutEnd`。这就是两阶段 Put 的意义：把"数据落位"和"对象发布"分开，避免读方看到半写状态。
 
 ## 2.6 异常与失败路径
 
-### 部分副本失败（`DetermineFinalizeDecision`，`client_service.cpp:332`）
-
-Put 是 best-effort 的：不是所有副本都必须成功。`DetermineFinalizeDecision` 根据 `transfer_summary` 决定最终动作：
-
-- **默认模式**：所有分配的副本都传输成功 → `PutEnd(ALL)`，成功。否则 → `PutRevoke(ALL)`，失败。
-- **FLEXIBLE_DUAL_REPLICA 模式**（内存 + NoF 双副本）：
-  - 内存和 NoF 都成功 → `PutEnd(ALL)`，成功。
-  - 只有内存成功 → `PutEnd(MEMORY)` + `PutRevoke(NOF_SSD)`，**仍算成功**。
-  - 只有 NoF 成功 → `PutEnd(NOF_SSD)` + `PutRevoke(MEMORY)`，仍算成功。
-  - 都失败 → `PutRevoke(ALL)`，失败。
-
-**重试是否安全？** `PutEnd` 对重试做了幂等处理：若所有目标副本已 `COMPLETE`，重复 `PutEnd` 视为 no-op（`master_service.cpp:4551`）。但 `PutStart` 对已存在对象返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 把它当作成功返回（`client_service.cpp:1885`）——这意味着**重复 Put 同一 key 不会覆盖**，而是静默成功。这是 KV cache 的语义：对象不可变，重复写同一 key 是幂等的。
-
 ### 空间不足
 
-`PutStart` 分配失败返回 `NO_AVAILABLE_HANDLE`，Master 置 `need_mem_eviction_ = true` 触发淘汰（`master_service.cpp:4112`）。`Client::Put` 收到该错误后返回失败，不重试（重试由上层决定）。
+`Allocate` 失败时，非双副本模式返回 `NO_AVAILABLE_HANDLE`，并在有足够 segment 的情况下置淘汰标记：
 
-### 僵尸对象
+```cpp
+// master_service.cpp:4112
+need_mem_eviction_ = true;
+```
 
-若 client 在 `PutStart` 后崩溃、未发 `PutEnd`/`PutRevoke`，对象进入"zombie"状态。Master 用 `put_start_discard_timeout`（默认 30s）允许后续 `PutStart` 抢占，用 `put_start_release_timeout`（默认 10min）回收空间（见 `mooncake-store.md` 的 Zombie Object Cleanup 章节）。
+`Client::Put` 收到后直接返回失败，不自动重试。**分析**：重试策略应放在上层（例如推理框架），因为立即重试很可能再次失败——淘汰是异步的。
+
+### 分配降级
+
+若分配的副本数少于请求数，`PutStart` 会打 `put_start_partial_allocation` 警告并增加指标，但只在配置允许降级时继续。这解释了为什么"Put 成功"不等于"要了几副本就有几副本"。
+
+### 部分副本失败
+
+`DetermineFinalizeDecision`（`client_service.cpp:332`）决定去向：
+
+- **可靠模式**（默认）：要求**分配到的**副本全部传输成功。否则 `PutRevoke(ALL)`，Put 失败。
+- **FLEXIBLE_DUAL_REPLICA**：memory 或 NoF 任一侧成功即算成功。失败的一侧被 `PutRevoke` 撤销，成功的一侧 `PutEnd`。
+
+也就是说，双副本模式下可能出现"Put 成功，但只有内存副本"的结果。**分析**：这不是 bug，而是把可用性放在冗余度之前的取舍；调用方若依赖副本数，需要读指标而不是假设。
+
+### 回滚的边界：PutRevoke 只撤销仍 PROCESSING 的副本
+
+```cpp
+// master_service.cpp:4776（节选）
+auto processing_rep = metadata.GetFirstReplica([replica_type](const Replica& r) {
+    if (replica_type == ReplicaType::ALL)
+        return (r.is_memory_replica() || r.is_nof_replica() ||
+                r.is_dfs_replica()) && !r.is_processing();
+    return r.type() == replica_type && !r.is_processing();
+});
+if (processing_rep != nullptr) {
+    return tl::make_unexpected(ErrorCode::INVALID_WRITE);
+}
+```
+
+如果目标副本里已经有一个 `COMPLETE`，Revoke 会失败。所以正确用法是"End 成功的那一类，Revoke 失败的那一类"——这正是 `DetermineFinalizeDecision` 的输出。**推断**：Confused deputy 式的错误调用（先 End 再 Revoke 同一类）会被拒绝，而不是误删数据。
+
+### 重复 Put 是否安全
+
+安全，但语义是**幂等而非覆盖**：`PutStart` 收到已存在的 key 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 直接当成功返回（`client_service.cpp:1885`）。已有内容不变。需要覆盖语义要用 `Upsert`。
+
+### Client 崩溃：僵尸对象
+
+若 client 在 `PutStart` 后崩溃，未发 `PutEnd`/`PutRevoke`，对象成为"僵尸"：不可读、也不可正常删除，还挡住后续对同一 key 的 Put。Master 用两个超时处理（`docs/source/deployment/mooncake-store-deployment-guide.md:572`）：
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `put_start_discard_timeout_sec` | 30 | 超时后允许后续 `PutStart` 顶替旧的 |
+| `put_start_release_timeout_sec` | 600 | 超时后旧的空间可被淘汰回收 |
+
+**关键细节**：顶替时**不复用旧空间**，而是重新分配；旧空间靠第二条超时回收（`docs/source/design/store/mooncake-store.md:672`）。所以僵尸对象在 30 秒内仍是故障源，只是不再永久阻塞。
+
+### 并发
+
+`AllocateAndInsertMetadata` 在 metadata 分片锁内完成查重与插入，`PutStart` 竞争同一 key 时只有一个能插入成功。`PutEnd` 校验 `client_id`，防止别的客户端替你提交。
 
 ## 2.7 验证与结论
 
-- **Put 主流程**：`mooncake-store/src/client_service.cpp` 的 `Client::Put`(L1853)、`TransferWrite`(L4479)、`DetermineFinalizeDecision`(L332)。
-- **Master 侧**：`mooncake-store/src/master_service.cpp` 的 `PutStart`(L4292)、`PutEnd`(L4509)、`AllocateAndInsertMetadata`(L4021)。
-- **测试**：`mooncake-store/tests/client_integration_test.cpp`（Put/Get 集成）、`master_service_placement_scenario_test.cpp`（副本放置）、`task_integration_test.cpp`（传输任务）。
-- **设计文档**：`docs/source/design/store/mooncake-store.md` 的 PutStart/PutEnd 说明、Zombie Object Cleanup、AllocationStrategy。
+- **Put 主流程**：`client_service.cpp` 的 `Client::Put`(`:1853`)、`TransferWrite`(`:4479`)、`TransferData`(`:4250`)、`DetermineFinalizeDecision`(`:332`)。
+- **Master 侧**：`master_service.cpp` 的 `PutStart`(`:4292`)、`AllocateAndInsertMetadata`(`:4021`)、`PutEnd`(`:4509`)、`PutRevoke`(`:4776`)、`IsReplicaReadable`(`:3546`)。
+- **状态机**：`mooncake-store/include/replica.h:52`。
+- **测试**：`mooncake-store/tests/client_integration_test.cpp`（Put/Get 集成）、`master_service_placement_scenario_test.cpp`（副本放置）、`master_service_replication_scenario_test.cpp`（多副本）、`task_integration_test.cpp`（传输任务）。
+- **设计文档**：`docs/source/design/store/mooncake-store.md` 的 PutStart/PutEnd 与 Zombie Object Cleanup；`docs/source/deployment/mooncake-store-deployment-guide.md:572` 的超时参数表。
 
-**结论**：Put 是两阶段操作。`PutStart` 从 Master 申请空间并选副本，`TransferWrite` 把数据搬到远端内存，`PutEnd` 把副本标记为 `COMPLETE` 使对象可见。**Put 返回成功 = 数据已落位 + Master 已提交 = 其他客户端可读**。部分副本失败时 best-effort 处理，`PutEnd` 幂等，重复 Put 同一 key 静默成功。下一篇看 Get 如何找到并读回。
+**结论**：Put 是两阶段操作。`PutStart` 分配空间并把副本置为 `PROCESSING`，`TransferWrite` 把数据搬到远端，`PutEnd` 把副本翻成 `COMPLETE`——**这一步才让对象可读**。因为 `Client::Put` 在 `PutEnd` 之后才返回，所以**Put 返回成功时另一客户端已经可以读**；但"成功"的强度取决于配置：默认要求分配到的副本全部成功，双副本模式只要求一侧成功。
+
+下一篇反过来问：Get 如何在若干副本里选一个、读回后又如何确认这次读是有效的。
 
 ---
 

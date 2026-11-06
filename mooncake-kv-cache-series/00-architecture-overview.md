@@ -111,6 +111,14 @@ Transfer Engine 需要一套 metadata server（etcd / redis / http）来集中�
 - **元数据路径**：Client → Master RPC。负责分配空间、查询副本、提交完成、删除。
 - **数据路径**：Client → Transfer Engine → 远端 Client 内存。Master 完全不参与。
 
+把两条路径按时间顺序展开：
+
+**一次 Put**：① 调用方把 buffer 切成 slice；② Master `PutStart` 选 segment/offset，返回 PROCESSING 状态的副本；③ client 用 TE 把 slice 写到副本地址；④ 全部 slice 完成 → `PutEnd` 把副本置 COMPLETE；⑤ 对象从此刻起对其他 client 可见（篇2）。
+
+**一次 Get**：① `GetReplicaList` 取副本列表并授予 lease；② 客户端按本地性/介质挑副本；③ TE 按 `buffer_address_` 读回；④ 传输完成后客户端再复查 lease，决定返回成功还是 `LEASE_EXPIRED`（篇3）。
+
+`PutEnd` 之前不可见、`GetReplicaList` 之后才可读——这两个"提交点"就是元数据路径存在的意义；数据路径只负责把字节搬到正确地址，不负责"什么时候能读"。
+
 **为什么分路？** 因为 KV Cache 是带宽敏感、元数据轻量的场景。Master 只做"空间记账"和"位置决策"，把高带宽的数据搬运交给 RDMA 直通，避免 Master 成为瓶颈。这也是 Mooncake 与 Redis/Memcached 这类"数据经过服务端"的缓存系统的本质区别——Mooncake 是**分布式 KV cache**，数据在客户端内存之间直传。
 
 ## 0.5 部署模式
@@ -127,6 +135,8 @@ Master 有两种部署方式：
 2. **HA 模式**：多个 master 节点通过 etcd 协调，etcd 选主。leader 故障或网络分区时，其余节点自动重新选主，保证持续可用。
 
 两种模式下，leader 都通过周期性心跳监控所有 client 节点的健康。client 崩溃/恢复后能自动重新加入集群。
+
+**怎么选（观点）**：单机单实例、只想扩 KV 容量，用 embedded + `kv_both` 最省事；TP 多 rank 且希望只保留一个真实 client 的 RPC/内存管理，用 dummy-real，避免 N 个 rank 各自注册 segment 和重复建连；多租户或多推理服务共享一个池，用 standalone service，把资源池与推理进程解耦。HA 解决的是 master 单点，不解决数据副本——副本仍由 `ReplicateConfig` 和 segment 分布决定，别把两者混为一谈。
 
 ## 0.6 生命周期总览：一个 KV Cache 对象的完整旅程
 
@@ -146,7 +156,7 @@ Put ──▶ 可见 ──▶ Get ──▶ 淘汰/删除 ──▶ (可选) SS
 - **Put（篇2）**：`put_from` → Master `PutStart` 分配 segment/offset → 副本位置选择 → TE 数据传输 → Master `PutEnd` 提交元数据 → 可见。
 - **Get（篇3）**：`get_into` → `batch_query`（元数据/lease）→ 副本选择 → TE 读取 → 完成/错误返回。
 - **生命周期（篇8）**：读 lease 保护 → 容量压力触发淘汰 → 删除/回收 → 并发协调。
-- **SSD 分层（篇9）**：内存压力 → 后台卸载到 SSD → 命中时经内存中转加载 → 淘汰 → Master 快照恢复元数据。
+- **SSD 分层（篇9）**：写入完成或内存压力 → Heartbeat 后台卸载到 SSD → 命中时经 staging buffer 加载回内存 → 磁盘水位淘汰 → 段丢失后 client 扫描本地元数据重新注册。
 
 ## 0.7 三个关键代码片段
 
@@ -202,7 +212,7 @@ Status submitTransfer(BatchID batch_id,
 - **可见性**：Put 是两阶段的（`PutStart` → 写数据 → `PutEnd`）。`PutEnd` 之前对象不可读，防止脏读。这是篇2 的核心。
 - **副本状态机**：每个副本有 `INIT → PROCESSING → COMPLETE` 状态，Master 据此判断对象是否可读。部分副本失败时 best-effort 处理。这是篇2/篇3 的核心。
 - **lease 保护**：`GetReplicaList` 成功会授予对象 lease，lease 有效期内对象不被 Remove/Eviction，保证读安全。lease 过期则读失败。这是篇8 的核心。
-- **故障恢复**：Master 崩溃后通过快照恢复元数据（`master_snapshot_manager.cpp`）；client 崩溃后其内存段被 leader 检测并处理。这是篇9 的核心。
+- **故障恢复**：Master 自身元数据可由快照恢复（`enable_snapshot` / `enable_snapshot_restore`，`master.cpp:365`–`:393`）；但已下沉对象的元数据恢复**不是快照**，而是 client 收到 `SEGMENT_NOT_FOUND` 后扫描本地 `.meta` 重新 `NotifyOffloadSuccess`（篇9）。client 崩溃后其内存段被 leader 检测并处理。
 
 ## 0.9 验证与结论
 

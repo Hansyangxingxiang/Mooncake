@@ -45,6 +45,45 @@ getBatchTransferStatus (multi_transport.cpp:363)  ← 聚合整个 batch
 freeBatchID (multi_transport.cpp:108)   ← 全部完成才允许释放
 ```
 
+### 5.3.1 两个核心结构：BatchDesc 与 TransferTask
+
+TE 的任务状态全部落在这两个结构里（`mooncake-transfer-engine/include/transport/transport.h`）：
+
+```cpp
+// transport.h:337
+struct TransferTask {
+    volatile uint64_t slice_count = 0;
+    volatile uint64_t success_slice_count = 0;
+    volatile uint64_t failed_slice_count = 0;
+    volatile uint64_t transferred_bytes = 0;
+    volatile bool is_finished = false;
+    uint64_t total_bytes = 0;
+    BatchID batch_id = 0;
+    Transport *transport_ = nullptr;      // 完成轮询要委托给它
+    const TransferRequest *request = nullptr;  // 指向调用方的 entries[i]
+    size_t request_count = 1;             // 分组后的请求数
+    std::vector<Slice *> slice_list;      // 来自 slice cache，析构时归还
+};
+
+// transport.h:379
+struct BatchDesc {
+    BatchID id;
+    size_t batch_size;
+    std::vector<TransferTask> task_list;
+    std::atomic<bool> has_failure{false};
+    std::atomic<bool> is_finished{false};
+    std::atomic<uint64_t> finished_transfer_bytes{0};
+};
+```
+
+这里有**三层不同的生命周期**，混在一起就会踩坑：
+
+1. `BatchDesc` 拥有 `task_list`，`freeBatchID` 删除 `BatchDesc` 时任务一起销毁。
+2. `TransferTask::request` 是**裸指针**，指向调用方传入的 `entries` 元素。**调用方必须保证 `entries` 在 batch 释放前一直有效**，不能扩容、不能提前析构。
+3. `TransferTask::slice_list` 持有从 `SliceCache` 借来的 `Slice*`，在 `~TransferTask()` 里归还（`transport.h:373` 附近）。slice 的所有权在 TE 内部，不在 `request` 里。
+
+> **分析（推断）**：`request` 用裸指针而不是拷贝，是为了避免每个请求一次分配。代价是把生命周期责任推给调用方，且编译器无法检查。Store 侧的用法是安全的——`TransferSubmitter` 提交后立即 `future->get()` 等待完成，`slices` 在整个调用期间都活着。
+
 ## 5.4 三个关键代码片段
 
 ### 片段1：BatchID 的分配与释放（`multi_transport.cpp:93` / `:108`）
@@ -182,6 +221,26 @@ if (success_slice_count + failed_slice_count == task.slice_count) {
 ### 提交失败
 
 `submitTransfer` 中某个 transport 的 `submitTransferTask` 失败，`overall_status` 记录错误，但**其余 transport 仍会继续提交**（`multi_transport.cpp:183` 循环不中断）。调用方需检查 `overall_status` 决定是否重试。
+
+注意这里有一个未定义行为的边界：**已提交到其他 transport 的任务不会被自动取消**。调用方拿到错误的 `overall_status` 后，仍然必须先轮询到 batch 结束、再 `freeBatchID`，直接丢弃 batch 会泄漏。**分析**：TE 没有提供"部分提交后的原子回滚"，因为它跨多个后端，回滚本身就不可靠；把决定权交给调用方是更诚实的做法。
+
+### 超出 batch 容量
+
+`submitTransfer` 在入口检查容量：
+
+```cpp
+// multi_transport.cpp:134
+if (!task_sizes &&
+    batch_desc.task_list.size() + entries.size() > batch_desc.batch_size) {
+    return Status::TooManyRequests("Exceed the limitation of batch capacity");
+}
+```
+
+`task_sizes` 非空时跳过该检查，因为分组会把多个 request 合成一个 task，最终 `batch_size` 被重设为 `task_list.size()`（`multi_transport.cpp:181`）。**推断**：这意味着批量接口的容量语义取决于是否启用分组，调用方按"请求数"计算 batch_size 时可能被分组后的实际任务数改变。
+
+### 事件驱动完成（编译期开关）
+
+`USE_EVENT_DRIVEN_COMPLETION` 打开时，任务多一个 `completed_slice_count` 和 `submission_sealed`，完成判定和通知走 condition_variable，而不是纯轮询。**边界**：本篇描述的是轮询路径（默认配置），事件驱动路径的行为需要单独验证。
 
 ## 5.7 验证与结论
 

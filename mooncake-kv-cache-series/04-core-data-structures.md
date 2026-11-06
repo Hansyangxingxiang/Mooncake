@@ -6,130 +6,242 @@
 
 ## 4.1 具体问题
 
-key、对象、分片、内存区域、副本及其关系是什么？这一篇把 Mooncake 的核心数据结构串起来，回答"一个 KV Cache 对象在内存里到底长什么样"。
+一个 KV Cache 对象的 key 变成一个可被 RDMA 读取的内存地址，中间经过了几层结构？每一层各自负责什么，谁持有谁，谁负责释放？
 
-> 注意：本版本中，计划提到的 `object_entry.h`/`object_metadata.h`/`object_index.h` 已不存在。对象元数据在 `include/master_service.h` 的 `ObjectMetadata`，副本在 `include/replica.h`，内存区域在 `include/allocator.h`。
+搞清楚这条映射链，后面讨论可见性、淘汰、SSD 下沉时就不会迷路——因为那些机制操作的正是这几层结构。本篇回答四个具体问题：
+
+1. **对象**在 Master 里以什么结构存在？
+2. **副本**如何表达"同一份数据的多种介质"？
+3. **内存区域**如何携带 TE 需要的地址信息？
+4. 这些结构的**所有权与生命周期**分别是什么？
+
+> **版本提示**：计划里提到的 `object_entry.h`、`object_metadata.h`、`object_index.h`、`object_runtime_state.h` 在 `v0.3.13.post1` 中**都不存在**。对象元数据是 `master_service.h` 里的 `ObjectMetadata`，副本在 `replica.h`，内存区域在 `allocator.h`。按旧文件名录源码会一无所获。
 
 ## 4.2 场景与版本
 
-- **场景**：理解一个对象从 key 到内存地址的完整映射链。
+- **场景**：一个对象，单副本，写入后被读取、可能被淘汰。
 - **版本**：`v0.3.13.post1`。
-- **核心文件**：`include/types.h`、`include/allocator.h`、`include/replica.h`、`include/replica_selection.h`、`include/master_service.h`。
+- **核心文件**：`include/types.h`、`include/allocator.h`、`include/replica.h`、`include/master_service.h`。
 
 ## 4.3 数据结构关系图
 
 ```
-ObjectKey (std::string)  ← 不透明字符串，框架构造
-   │
-   ▼
-ObjectMetadata (master_service.h:1031)   ← Master 内存中的对象元数据
-   │  client_id, put_start_time, size, lease_timeout, soft_pin_timeout, hard_pinned
-   │  replicas_ : ReplicaList = unordered_map<uint32_t, Replica>
-   ▼
-Replica (replica.h:259)   ← 一个副本
-   │  id_, status_, refcnt_
-   │  data_ : variant<MemoryReplicaData, NoFReplicaData, DiskReplicaData,
-   │                  LocalDiskReplicaData, DfsReplicaData>
-   ▼
-MemoryReplicaData → AllocatedBuffer (allocator.h:39)
-   │  buffer_ptr_, size_, segment_name_, offset_handle_
-   ▼
-AllocatedBuffer::Descriptor (allocator.h:83)   ← 序列化后发给 TE 的"地址"
-   │  size_, buffer_address_, protocol_, transport_endpoint_
-   ▼
-Segment (types.h:433)   ← 存储节点的一段连续内存
-   │  id, name, base, size, te_endpoint, protocol, host_id
+key (ObjectKey = std::string)                      types.h:181
+ │
+ ▼
+ObjectMetadata                                     master_service.h:1031
+ │  client_id / put_start_time / size / data_type
+ │  lease_timeout / soft_pin_timeout / hard_pinned
+ │  replicas_ : ReplicaList                         types.h:187
+ ▼
+ReplicaList = unordered_map<uint32_t, Replica>
+ │  一个对象多个副本，key 是 ReplicaID
+ ▼
+Replica                                            replica.h:259
+ │  id_ / status_ / refcnt_
+ │  data_ : variant<MemoryReplicaData, NoFReplicaData,
+ │                  DiskReplicaData, LocalDiskReplicaData,
+ │                  DfsReplicaData>                 replica.h:700
+ ▼
+MemoryReplicaData { unique_ptr<AllocatedBuffer> }   replica.h:203
+ │
+ ▼
+AllocatedBuffer                                    allocator.h:39
+ │  buffer_ptr_ / size_ / segment_name_
+ │  weak_ptr<BufferAllocatorBase> allocator_        allocator.h:96
+ ▼
+AllocatedBuffer::Descriptor                        allocator.h:83
+ │  size_ / buffer_address_ / protocol_ / transport_endpoint_
+ ▼
+Segment（存储节点的一段连续内存）                    types.h:433
+    base / size / te_endpoint / host_id
 ```
+
+注意这条链上出现了**两种 Descriptor**：`Replica::Descriptor`（副本级，含状态）和 `AllocatedBuffer::Descriptor`（内存级，含地址）。前者是后者加上类型和状态的外壳。
 
 ## 4.4 三个关键代码片段
 
-### 片段1：对象元数据（`master_service.h:1031`）
-
-`ObjectMetadata` 是 Master 内存中一个对象的全部状态。它持有副本列表、lease、soft/hard pin 等生命周期信息：
+### 片段1：`ObjectMetadata`——对象状态集中在一个不可移动的结构里
 
 ```cpp
-// master_service.h:1091  对象元数据核心字段
-UUID client_id;                              // 发起 PutStart 的客户端
-std::chrono::system_clock::time_point put_start_time;  // 用于僵尸对象清理
-const size_t size;                           // 对象大小
-std::optional<uint64_t> object_checksum;     // 校验和
-const ObjectDataType data_type;              // KVCACHE/TENSOR/WEIGHT...
-const std::string group_id;                  // 可选对象组
-const TenantId tenant_id;                    // 租户
-const std::string user_key;                  // 用户 key
-// ... lease_timeout, soft_pin_timeout, hard_pinned ...
-// replicas_ : ReplicaList = unordered_map<uint32_t, Replica>
+// mooncake-store/include/master_service.h:1031（节选）
+struct ObjectMetadata {
+    ~ObjectMetadata() {
+        MasterMetricManager::instance().dec_key_count(1);
+        if (soft_pin_timeout) {
+            MasterMetricManager::instance().dec_soft_pin_key_count(1);
+        }
+    }
+    ObjectMetadata(const ObjectMetadata&) = delete;
+    ObjectMetadata& operator=(const ObjectMetadata&) = delete;
+    ObjectMetadata(ObjectMetadata&&) = delete;
+    ObjectMetadata& operator=(ObjectMetadata&&) = delete;
+
+    UUID client_id;                                     // 谁发起的 PutStart
+    std::chrono::system_clock::time_point put_start_time; // 僵尸清理用
+    const size_t size;                                  // 对象大小
+    std::optional<uint64_t> object_checksum;            // 可选校验和
+    const ObjectDataType data_type;                     // KVCACHE / TENSOR / ...
+    const std::string group_id;
+    const TenantId tenant_id;
+    const std::string user_key;
+
+    mutable SpinLock lock;
+    mutable std::chrono::system_clock::time_point lease_timeout GUARDED_BY(lock);
+    mutable std::optional<std::chrono::system_clock::time_point>
+        soft_pin_timeout GUARDED_BY(lock);
+    const bool hard_pinned{false};
+    TenantQuotaLedger quota_ledger;
+    // replicas_ : ReplicaList
+};
 ```
 
-**关键点**：`replicas_` 是 `unordered_map<uint32_t, Replica>`（`types.h:187`），一个对象可以有多个副本。`client_id` 记录谁写的，`PutEnd` 时校验（见篇2）。
+**为什么拷贝/移动全部 delete**：结构里有 `SpinLock`，还有一组靠析构维持的指标（`key_count`）。允许移动会导致锁语义和指标计数错乱。因此它被原地构造进 `unordered_map` 的节点（`emplace(std::piecewise_construct, ...)`，见 `master_service.cpp:4256`），之后地址不再变化。
 
-### 片段2：副本（`replica.h:259`）
+**输入/输出**：`ObjectMetadata` 不对外暴露，只作为 Master 内存态存在。客户端看到的是它的副本列表序列化结果。
 
-`Replica` 用 `std::variant` 区分五种副本类型（内存/NoF SSD/共享磁盘/本地磁盘/DFS），每种持有不同的数据：
+> **分析（推断）**：`lease_timeout` 用 `SpinLock` 保护而不是 `shared_mutex`，是因为 lease 刷新非常频繁（每次 Get），临界区只有几行，自旋比睡眠更划算。
+
+### 片段2：`Replica`——介质用 variant，状态用枚举，引用计数只表示 busy
+
+`Replica` 有两个 variant：**数据**（物理介质）和**描述符**（发给客户端的可序列化形式）。
 
 ```cpp
-// replica.h:700  副本数据是 variant
+// mooncake-store/include/replica.h:700
 std::variant<MemoryReplicaData, NoFReplicaData, DiskReplicaData,
-             LocalDiskReplicaData, DfsReplicaData> data_;
-ReplicaStatus status_{ReplicaStatus::UNDEFINED};   // 状态机
-std::atomic<uint32_t> refcnt_{0};                  // 引用计数（busy 判断）
+             LocalDiskReplicaData, DfsReplicaData>
+    data_;
 
-// replica.h:52  副本状态机
-enum class ReplicaStatus {
-    UNDEFINED = 0, INITIALIZED, PROCESSING, COMPLETE, REMOVED, FAILED,
+// mooncake-store/include/replica.h:566
+struct Descriptor {
+    ReplicaID id;
+    std::variant<MemoryDescriptor, NoFDescriptor, DiskDescriptor,
+                 LocalDiskDescriptor, DistributedFSDescriptor>
+        descriptor_variant;
+    ReplicaStatus status;
+    YLT_REFL(Descriptor, id, descriptor_variant, status);
+};
+
+// mooncake-store/include/replica.h:203
+struct MemoryReplicaData { std::unique_ptr<AllocatedBuffer> buffer; };
+// :211
+struct DiskReplicaData { std::string file_path; uint64_t object_size = 0; };
+// :216
+struct LocalDiskReplicaData {
+    UUID client_id; uint64_t object_size = 0; std::string transport_endpoint;
 };
 ```
 
-`Replica::Descriptor`（`replica.h:566`）是序列化后发给客户端的"副本位置"，包含 `id`、`descriptor_variant`（内存/NoF/Disk/LocalDisk/DFS 描述符）、`status`。`SelectBestReplica` 只选 `COMPLETE` 的副本（见篇3）。
+`Descriptor` 用 `YLT_REFL` 做反射序列化，这就是 Master 返回给客户端、再交给 TE 的那份"位置信息"。
 
-### 片段3：内存区域（`allocator.h:39`）
-
-`AllocatedBuffer` 是内存副本的核心，它的 `Descriptor` 就是 TE 传输所需的"地址信息"：
+状态机是受限的，非法转换只记日志不改状态：
 
 ```cpp
-// allocator.h:83  序列化后的内存描述符
-struct Descriptor {
-    uint64_t size_;                 // 大小
-    uintptr_t buffer_address_;      // 内存地址
-    std::string protocol_;          // tcp/rdma...
-    std::string transport_endpoint_; // ip:port，TE 寻址用
-};
-
-// allocator.h:96  内部状态
-std::weak_ptr<BufferAllocatorBase> allocator_;  // 所属分配器
-std::string segment_name_;                      // 所属 segment
-void* buffer_ptr_{nullptr};                     // 内存指针
-std::size_t size_{0};
-std::optional<offset_allocator::OffsetAllocationHandle> offset_handle_;  // offset 分配句柄
+// mooncake-store/include/replica.h:511
+void mark_complete() {
+    if (status_ == ReplicaStatus::PROCESSING) status_ = ReplicaStatus::COMPLETE;
+    else if (status_ == ReplicaStatus::COMPLETE)
+        LOG(WARNING) << "Replica already marked as complete";
+    else LOG(ERROR) << "Invalid replica status: " << status_;
+}
+// :521  mark_processing 只允许 COMPLETE → PROCESSING
+// :529  mark_removed 允许 COMPLETE/PROCESSING → REMOVED
 ```
 
-**关键点**：`transport_endpoint_`（ip:port）是 TE 找到远端内存的关键。`buffer_address_` + `size_` 告诉 TE 数据在哪。这就是"元数据与数据分路"的落点——Master 返回 `Replica::Descriptor`，客户端拿 `transport_endpoint_` 去 TE 找远端，拿 `buffer_address_` 定位数据。
+**关键点**：`refcnt_` **不是生命周期引用计数**。副本的生命周期由 `ObjectMetadata` 里的 `unique_ptr` / 容器持有；`refcnt_` 只表示"当前是否被读写占用"，用于淘汰判断：
 
-## 4.5 对象 → 内存的完整映射
+```cpp
+// mooncake-store/include/replica.h:386
+[[nodiscard]] bool is_busy() const { return refcnt_.load() > 0; }
+```
 
-把三个片段串起来，一个 KV Cache 对象的完整映射是：
+> **观点**：把"忙"和"活"分成两个概念是正确的。淘汰要看的是"有没有人在用"，而不是"有几个持有者"；后者由所有权模型静态保证。
 
-1. **key**（`ObjectKey` = `std::string`）→ 框架构造的不透明字符串。
-2. **ObjectMetadata** → Master 内存中按 key 索引（`tenant_state.metadata` 是 `unordered_map<string, ObjectMetadata>`）。
-3. **Replica** → 对象的一个副本，`variant` 区分类型，`status` 状态机，`refcnt` 判断 busy。
-4. **AllocatedBuffer** → 内存副本的实际内存区域，`Descriptor` 序列化出 `transport_endpoint_` + `buffer_address_` + `size_`。
-5. **Segment** → 存储节点的一段连续内存，多个 buffer 属于同一 segment（同一故障域）。
+### 片段3：`AllocatedBuffer`——地址信息的载体，析构即归还
+
+```cpp
+// mooncake-store/include/allocator.h:83
+struct Descriptor {
+    uint64_t size_;
+    uintptr_t buffer_address_;
+    std::string protocol_;
+    std::string transport_endpoint_;
+    YLT_REFL(Descriptor, size_, buffer_address_, protocol_,
+             transport_endpoint_);
+};
+
+// mooncake-store/include/allocator.h:96
+std::weak_ptr<BufferAllocatorBase> allocator_;   // 所属分配器
+std::string segment_name_;                       // 所属 segment
+void* buffer_ptr_{nullptr};
+std::size_t size_{0};
+std::optional<offset_allocator::OffsetAllocationHandle> offset_handle_;
+```
+
+析构时若无条件归还：
+
+```cpp
+// mooncake-store/src/allocator.cpp:45
+AllocatedBuffer::~AllocatedBuffer() {
+    auto alloc = allocator_.lock();
+    if (alloc) {
+        alloc->deallocate(this);          // 归还 offset / 内存
+        VLOG(1) << "buf_handle_deallocated size=" << size_;
+    }
+}
+```
+
+**所有权链**：`ObjectMetadata` → `Replica` → `unique_ptr<AllocatedBuffer>` → `weak_ptr<BufferAllocatorBase>`。前三级是强持有，最后一级是弱引用：**allocator 可以比 buffer 先死**（例如 segment 被卸载），此时析构不再归还，因为分配器自身已经没了。
+
+这个设计有一个直接后果，体现在可读性判断里：
+
+```cpp
+// mooncake-store/include/replica.h:444
+[[nodiscard]] bool has_invalid_mem_handle() const {
+    if (is_memory_replica()) {
+        const auto& mem_data = std::get<MemoryReplicaData>(data_);
+        return !mem_data.buffer->isAllocatorValid();   // weak_ptr 是否还有效
+    }
+    return false;
+}
+```
+
+`IsReplicaReadable`（`master_service.cpp:3546`）正是靠它把"segment 已卸载"的副本排除掉。**所以副本记录还在，不代表副本还能读**——这是故障恢复时必须理解的一点。
+
+## 4.5 一次 slice 的旅程
+
+把这些结构按一次写入串起来：
+
+1. 调用方给 `(buffer, size)`，`split_into_slices` 把它切成 `Slice{ptr, size}` 列表（`types.h:421`）。
+2. Master 的 `AllocateAndInsertMetadata` 为每个副本分配 `AllocatedBuffer`，`Replica` 以 `PROCESSING` 状态插入 `ObjectMetadata.replicas_`。
+3. `Replica::Descriptor` 序列化后返回客户端，其中 `AllocatedBuffer::Descriptor` 携带 `transport_endpoint_` 与 `buffer_address_`。
+4. 客户端把 slice 和这份 descriptor 交给 TE；TE 用 endpoint 找远端 segment，用 address + size 定位写入范围。
+5. `PutEnd` 只改 `ReplicaStatus`，**不移动任何地址信息**。
+6. 对象被删除/淘汰时，`ObjectMetadata` 连同其 `Replica` 一起析构，`AllocatedBuffer` 析构触发 allocator 归还。
+
+第 5 步值得强调：**可见性切换只改状态位，不改地址**。所以"读完再失效"不会导致地址漂移，这也是 lease 机制能够奏效的前提。
 
 ## 4.6 异常与并发
 
-- **refcnt 与 busy**：`Replica::is_busy()` 返回 `refcnt_ > 0`（`replica.h:386`）。副本被读取/写入时 refcnt 增加，busy 的副本不能被删除/淘汰（见篇8）。
-- **状态机约束**：`mark_complete` 只能从 `PROCESSING` 转 `COMPLETE`（`replica.h:511`），`mark_processing` 只能从 `COMPLETE` 转 `PROCESSING`（`replica.h:521`）。非法转换会 LOG(ERROR)，防止状态错乱。
-- **RAII 指标**：`ObjectMetadata` 析构时 `dec_key_count`（`master_service.h:1048`），`Replica` 析构时对 disk/local_disk 副本 `dec_allocated_file_size`（`replica.h:311`），保证指标一致。
+- **状态非法转换**：`mark_complete` 从 `UNDEFINED` 调用会记 `ERROR` 但不改变状态。**分析**：这是"防御性记录而非崩溃"的风格——Master 不会因为一次非法调用退出，但日志会留下证据。
+- **segment 卸载**：`AllocatedBuffer` 的 `weak_ptr` 失效，`has_invalid_mem_handle()` 为真，副本从可读集合中消失。数据可能还物理存在，但系统不再把它当作可读副本——**这与"数据丢失"不同，属于"寻址能力丢失"**。
+- **并发读**：`refcnt_` 只做 `fetch_add/sub`，`is_busy()` 是瞬时判断。淘汰方需要先检查再操作，但检查与操作之间不是原子的——真正的保护靠 lease（篇8），`is_busy` 只是辅助信号。
+- **指标一致性**：`ObjectMetadata` 析构扣 `key_count`，`Replica` 析构对磁盘副本扣 `allocated_file_size`（`replica.h:311`）。**分析**：把指标维护绑定在 RAII 上，避免"忘记上报"这类泄漏。
+- **锁与不可移动**：`ObjectMetadata` 禁止移动，保证 `GUARDED_BY(lock)` 的字段始终与锁同址。移动语义一旦放开，静态分析就失效。
 
 ## 4.7 验证与结论
 
-- **类型定义**：`mooncake-store/include/types.h`（`ObjectKey`、`Slice`、`Segment`、`ErrorCode`、`ObjectDataType`）。
-- **内存区域**：`mooncake-store/include/allocator.h`（`AllocatedBuffer`、`Descriptor`、`OffsetBufferAllocator`、`CachelibBufferAllocator`）。
-- **副本**：`mooncake-store/include/replica.h`（`Replica`、`ReplicaStatus`、`ReplicateConfig`、`Replica::Descriptor`）。
-- **对象元数据**：`mooncake-store/include/master_service.h` 的 `ObjectMetadata`(L1031)。
-- **测试**：`mooncake-store/tests/replica_selection_test.cpp`、`segment_test.cpp`、`object_entry_test.cpp`（若存在）。
+- **类型定义**：`mooncake-store/include/types.h` 的 `ObjectKey`(`:181`)、`ReplicaList`(`:187`)、`Slice`(`:421`)、`Segment`(`:433`)。
+- **内存区域**：`mooncake-store/include/allocator.h` 的 `AllocatedBuffer`(`:39`)、`Descriptor`(`:83`)、`allocator_`(`:96`)；析构在 `src/allocator.cpp:45`。
+- **副本**：`mooncake-store/include/replica.h` 的 `ReplicaStatus`(`:52`)、各 `*ReplicaData`(`:203`–`:232`)、`Replica`(`:259`)、`Descriptor`(`:566`)、`data_`(`:700`)、`is_busy`(`:386`)、`mark_complete`(`:511`)、`has_invalid_mem_handle`(`:444`)。
+- **对象元数据**：`mooncake-store/include/master_service.h` 的 `ObjectMetadata`(`:1031`)。
+- **测试**：`mooncake-store/tests/replica_selection_test.cpp`、`segment_test.cpp`、`master_service_replication_scenario_test.cpp`。注意：`object_entry_test.cpp` / `object_index_test.cpp` 在该 tag 不存在。
 
-**结论**：Mooncake 的对象组织是**分层映射**——key → ObjectMetadata（含副本列表）→ Replica（variant 区分类型 + 状态机）→ AllocatedBuffer（内存区域）→ Segment（存储节点）。`Replica::Descriptor` 的 `transport_endpoint_` + `buffer_address_` 是元数据与数据分路的落点。下一篇进入 Transfer Engine，看传输任务如何提交和完成。
+**结论**：Mooncake 的对象组织是**五层映射**——key → `ObjectMetadata`（不可移动，含副本表与生命周期字段）→ `Replica`（variant 区分介质 + 状态机 + busy 计数）→ `AllocatedBuffer`（地址 + 弱引用分配器）→ `Segment`（物理内存段）。`Replica::Descriptor` 是元数据与数据分路的落点：它携带 `transport_endpoint_` 与 `buffer_address_`，让 TE 在不经过 Master 的情况下直连数据。
+
+**边界**：本篇讨论的是单副本、内存介质的最短链。NoF/DFS/LocalDisk 副本在 `Replica` 层替换了 variant，但上层映射不变；SSD 相关的额外字段（文件路径、offset、shard）见篇9。
+
+下一篇进入 Transfer Engine：一份 `Descriptor` 是如何变成一个异步传输任务的。
 
 ---
 
