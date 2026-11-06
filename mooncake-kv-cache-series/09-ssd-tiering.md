@@ -22,7 +22,7 @@
 - **场景**：Store 集群的内存副本被淘汰后，希望数据仍在本地 SSD 上，下次读命中时能重新加载进内存，而不是回源重算。
 - **版本**：`v0.3.13.post1`。Master 侧在 `src/master_service.cpp`（入队、注册、promotion 状态机、TTL 回收）；执行侧在 `src/file_storage.cpp`（Heartbeat、D2H 拷贝、promotion 执行）；落盘在 `src/storage_backend.cpp` 的 `BucketStorageBackend`；后台邮箱在 `src/local_ssd/manager.cpp`。
 - **默认参数**：`heartbeat_interval_seconds=10`（`include/storage_backend.h:354`）；`bucket_size_limit=256MB`、`bucket_keys_limit=500`（`:205`、`:208`）；`total_size_limit=2TB`（`:350`）；磁盘水位淘汰默认开启，high `0.90` / low `0.80`（`:367`–`:369`）；`offloading_queue_limit=50000`（`include/master_config.h:129`）；`promotion_on_hit=false`、`promotion_admission_threshold=2`、`promotion_queue_limit=50000`、`promotion_max_per_heartbeat=1`（`:134`–`:142`）。
-- **主路径**：下沉 `PutEnd` 的下沉块（`master_service.cpp:4610`）→ `PushOffloadingQueue`（`:7541`）→ `Heartbeat`（`file_storage.cpp:649`）→ `OffloadObjects`（`:309`）→ `BatchOffload`（`storage_backend.cpp:1735`）→ `NotifyOffloadSuccess`（`master_service.cpp:7365`）；加载 `GetReplicaList`（`:3691`）→ `TryPushPromotionQueue`（`:8546`）→ `ProcessPromotionTasks`（`file_storage.cpp:855`）→ `NotifyPromotionSuccess`（`master_service.cpp:8837`）。
+- **主路径**：下沉 `PutEnd` 的下沉块（`master_service.cpp:4610`）→ `PushOffloadingQueue`（`:7541`）→ `Heartbeat`（`file_storage.cpp:649`）→ `OffloadObjects`（`:309`）→ `BatchOffload`（`storage_backend.cpp:1735`）→ `NotifyOffloadSuccess`（`master_service.cpp:7365`）；加载 `GetReplicaList`（`:3626`）→ `TryPushPromotionQueue`（`:8546`）→ `ProcessPromotionTasks`（`file_storage.cpp:855`）→ `NotifyPromotionSuccess`（`master_service.cpp:8837`）。
 
 ## 9.3 调用链图
 
@@ -56,7 +56,7 @@ NotifyOffloadSuccess (master_service.cpp:7365)
    └─ 新增 / 更新 LOCAL_DISK COMPLETE 副本              :7460–7506
 
 加载（promotion，默认关闭）
-GetReplicaList (master_service.cpp:3691)
+GetReplicaList (master_service.cpp:3626)
    ├─ 无 MEMORY 副本 + 有 LOCAL_DISK 副本 → 可提升
    └─ TryPushPromotionQueue (master_service.cpp:8546)
         ├─ 频次门槛 promotion_admission_threshold_
@@ -258,7 +258,7 @@ bucket->metadatas.emplace_back(BucketObjectMetadata{
 storage_offset += object_total_size + object.first.size();
 ```
 
-`.meta` 是 `struct_pb` 序列化的 `BucketMetadata`：`meta_size`、`data_size`、`keys`，以及每个对象的 `{offset, key_size, data_size}`（`storage_backend.cpp:3479`；结构见 `storage_backend.h:30`–`:37`）。读取时 `LoadBucketMetadata`（`:3511`）整文件反序列化，按 offset 直接定位，不需要扫描数据文件。
+`.meta` 是 `struct_pb` 序列化的 `BucketMetadata`：`meta_size`、`data_size`、`keys`，以及每个对象的 `{offset, key_size, data_size}`（结构见 `storage_backend.h:30`–`:37`；`StoreBucketMetadata` 在 `storage_backend.cpp:3479`，`struct_pb::to_pb` 调用在 `:3494`）。读取时 `LoadBucketMetadata`（`:3511`）整文件反序列化，按 offset 直接定位，不需要扫描数据文件。
 
 写入顺序是**数据先、元数据后**。开了 `USE_URING` 时，数据还要 `datasync` 之后才写元数据；非 uring 回退路径只做 `vector_write`，没有显式 sync（`:2678`–`:2699`）：
 
