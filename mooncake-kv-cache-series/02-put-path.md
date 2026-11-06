@@ -291,7 +291,7 @@ if (processing_rep != nullptr) {
 - **Put 主流程**：`client_service.cpp` 的 `Client::Put`(`:1853`)、`TransferWrite`(`:4479`)、`TransferData`(`:4250`)、`DetermineFinalizeDecision`(`:332`)。
 - **Master 侧**：`master_service.cpp` 的 `PutStart`(`:4292`)、`AllocateAndInsertMetadata`(`:4021`)、`PutEnd`(`:4509`)、`PutRevoke`(`:4776`)、`IsReplicaReadable`(`:3546`)。
 - **状态机**：`mooncake-store/include/replica.h:52`。
-- **测试**：`mooncake-store/tests/client_integration_test.cpp`（Put/Get 集成）、`master_service_placement_scenario_test.cpp`（副本放置）、`master_service_replication_scenario_test.cpp`（多副本）、`task_integration_test.cpp`（传输任务）。
+- **测试**：`mooncake-store/tests/client_integration_test.cpp`（Put/Get 集成）、`dynamic_replication_test.cpp`（动态副本）、`task_integration_test.cpp`（传输任务）。
 - **设计文档**：`docs/source/design/store/mooncake-store.md` 的 PutStart/PutEnd 与 Zombie Object Cleanup；`docs/source/deployment/mooncake-store-deployment-guide.md:572` 的超时参数表。
 
 **结论**：Put 是两阶段操作。`PutStart` 分配空间并把副本置为 `PROCESSING`，`TransferWrite` 把数据搬到远端，`PutEnd` 把副本翻成 `COMPLETE`——**这一步才让对象可读**。因为 `Client::Put` 在 `PutEnd` 之后才返回，所以**Put 返回成功时另一客户端已经可以读**；但"成功"的强度取决于配置：默认要求分配到的副本全部成功，双副本模式只要求一侧成功。

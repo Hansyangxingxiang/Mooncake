@@ -37,7 +37,7 @@ Master 的入口在 `mooncake-store/src/master.cpp`，RPC 服务在 `src/master_
 - `MountSegment` / `UnmountSegment`：存储节点注册/注销内存段。
 - `BatchQueryIp`：批量查询存储节点的网络位置。
 
-**关键点**：Master 管的是"对象 → 副本（segment + offset + size）"的映射，以及每个副本的状态机（`INIT → PROCESSING → COMPLETE`）。数据本身在 Client 的内存里，Master 只记"数据在哪"。
+**关键点**：Master 管的是"对象 → 副本（segment + offset + size）"的映射，以及每个副本的状态机（`UNDEFINED / INITIALIZED / PROCESSING / COMPLETE / REMOVED / FAILED`；空间已分配、等待写入是 `INITIALIZED`）。数据本身在 Client 的内存里，Master 只记"数据在哪"。
 
 ### 0.3.2 Client（双角色：请求方 + 存储方）
 
@@ -64,7 +64,7 @@ int setup_real(
 ```
 
 - `global_segment_size = 0` → **纯 client**，只发请求，不贡献内存。
-- `local_buffer_size = 0` → **纯 server**，只提供内存，不允许 Get/Put。
+- `local_buffer_size = 0` → 按设计约定作为**纯 server**，只提供内存。注意代码只跳过本地暂存 buffer 的注册（`real_client.cpp:883`、`:903`），并未在 API 层禁止 Get/Put；只有依赖临时 buffer 的路径会因此失败。
 
 ### 0.3.3 Transfer Engine（数据面）
 
@@ -206,7 +206,7 @@ service MasterService {
 }
 ```
 
-注意：**没有任何一个 RPC 携带数据本体**。`PutStart` 只传 `key`、`value_length`、`slice_lengths`、`ReplicateConfig`，返回的是 `replica_list`（副本位置）。数据搬运完全在 Client 之间完成。
+注意：**没有任何一个 RPC 携带数据本体**。单对象 `PutStart` 传 `client_id`、`key`、`slice_length`、`ReplicateConfig` 和 `tenant_id`（批量版本 `BatchPutStart` 才用 `slice_lengths`），返回的是 `replica_list`（副本位置）。数据搬运完全在 Client 之间完成。
 
 ### 片段2：Client 的双角色（`real_client.h:85`）
 
@@ -241,7 +241,7 @@ Status submitTransfer(BatchID batch_id,
 这一篇只点出全局层面的并发/失败设计，细节留给各篇：
 
 - **可见性**：Put 是两阶段的（`PutStart` → 写数据 → `PutEnd`）。`PutEnd` 之前对象不可读，防止脏读。这是篇2 的核心。
-- **副本状态机**：每个副本有 `INIT → PROCESSING → COMPLETE` 状态，Master 据此判断对象是否可读。部分副本失败时 best-effort 处理。这是篇2/篇3 的核心。
+- **副本状态机**：每个副本有 `UNDEFINED / INITIALIZED / PROCESSING / COMPLETE / REMOVED / FAILED` 状态，Master 据此判断对象是否可读。部分副本失败时 best-effort 处理。这是篇2/篇3 的核心。
 - **lease 保护**：`GetReplicaList` 成功会授予对象 lease，lease 有效期内对象不被 Remove/Eviction，保证读安全。lease 过期则读失败。这是篇8 的核心。
 - **故障恢复**：Master 自身元数据可由快照恢复（`enable_snapshot` / `enable_snapshot_restore`，`master.cpp:365`–`:393`）；但已下沉对象的元数据恢复**不是快照**，而是 client 收到 `SEGMENT_NOT_FOUND` 后扫描本地 `.meta` 重新 `NotifyOffloadSuccess`（篇9）。client 崩溃后其内存段被 leader 检测并处理。
 

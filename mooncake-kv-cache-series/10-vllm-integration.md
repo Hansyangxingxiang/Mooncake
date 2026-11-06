@@ -188,7 +188,7 @@ struct TensorMetadata {
 };
 ```
 
-**关键点**：`ValidateTensorMetadata`（`integration_utils.h:306`）校验 magic、version、`header_size`、dtype 范围、`ndim ≤ 8`、`data_offset` 落在 `[sizeof(TensorMetadata), total_length]`、`data_bytes` 与总长自洽，并反算 `numel * element_size` 是否等于 `data_bytes`。**所以 Mooncake 存的是"带自描述头的字节块"，不是 PyTorch 张量对象**；TP 场景下 `layout_kind = SHARD` 和 `LayoutAxis` 记录分片信息（`integration_utils.h:176`、`:208`）。**分析（推断）**：把 schema 放进数据本身，让 Store 完全不需要理解 KV Cache 的语义——它只按 key 存字节，跨版本/跨 TP 布局的兼容责任留在读写双方。代价是每个对象多一个 header，且任何字段错误都会让整次读退化成未命中。
+**关键点**：`ValidateTensorMetadata`（`integration_utils.h:308`）校验 magic、version、`header_size`、dtype 范围、`ndim ≤ 8`、`data_offset` 落在 `[sizeof(TensorMetadata), total_length]`、`data_bytes` 与总长自洽，并反算 `numel * element_size` 是否等于 `data_bytes`。**所以 Mooncake 存的是"带自描述头的字节块"，不是 PyTorch 张量对象**；TP 场景下 `layout_kind = SHARD` 和 `LayoutAxis` 记录分片信息（`integration_utils.h:176`、`:208`）。**分析（推断）**：把 schema 放进数据本身，让 Store 完全不需要理解 KV Cache 的语义——它只按 key 存字节，跨版本/跨 TP 布局的兼容责任留在读写双方。代价是每个对象多一个 header，且任何字段错误都会让整次读退化成未命中。
 
 ## 10.5 命中语义：Mooncake 提供池，vLLM 提供哈希
 
@@ -253,7 +253,7 @@ PD 场景下 `VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT` 默认 480 秒（`disagg-pref
 ## 10.7 验证与结论
 
 - **Python 绑定**：`mooncake-integration/store/store_py.cpp` 的 `batch_get_tensor_metadata_prefixes`(`L743`)、ranged 探测(`L748`–`L775`)、`get_tensor_into`(`L662`)、GIL 释放(`L677`)、`get_into`(`L678`)、`buffer_to_tensor`(`L167`)、失败分支(`L198`–`:205`)、`put_tensor_from`(`L1205`)、header 校验(`L1220`)、`put_from`(`L1226`)、`batch_get_tensor_with_tp_into`(`L892`)、`put_tensor_with_tp_from`(`L1318`)、pybind 注册(`L2492`/`L2530`)。
-- **张量 wire format**：`mooncake-integration/integration_utils.h` 的 magic/version(`L171`–`:172`)、`TensorObjectHeader`(`L212`)、`TensorMetadata`(`L223`)、`ValidateTensorMetadata`(`L306`)、`ParseTensorMetadata`(`L383`)。
+- **张量 wire format**：`mooncake-integration/integration_utils.h` 的 magic/version(`L171`–`:172`)、`TensorObjectHeader`(`L212`)、`TensorMetadata`(`L223`)、`ValidateTensorMetadata`(`L308`)、`ParseTensorMetadata`(`L383`)。
 - **Store 侧**：`mooncake-store/include/real_client.h` 的 `get_into`(`L138`)、`get_into_ranges`(`L140`)、`put_from`(`L191`)；`src/real_client.cpp` 的 `execute_ranged_read`(`L3475`)、`get_into`(`L3758`)、`get_into_ranges`(`L4010`)。
 - **集成文档**：`docs/source/deployment/integrations/vllm/kv-cache-storage.md` 的能力声明(`L5`)、TTFT 对照(`L7`)、V1 容错(`L25`)、块哈希前缀缓存(`L34`)、配置(`L56`–`:68`)、`kv_both`(`L78`)、XpYd(`L83`–`:128`)、DP 哈希种子(`L143`–`:149`)、`protocol`(`L210`)、V0 限制(`L312`)；`disagg-prefill-decode.md` 的带宽(`L5`)、角色(`L122`–`:124`)、`BOOTSTRAP_PORT`(`L129`)、`ABORT_REQUEST_TIMEOUT`(`L133`)、端口间隔(`L204`/`L263`)。
 - **测试**：`mooncake-integration/tests/`、`python/tests/integration/`。注意 connector 本身在 vLLM 仓库，本 tag 无法引用其实现代码。

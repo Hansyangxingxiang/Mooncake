@@ -267,7 +267,7 @@ AllocatedBuffer::~AllocatedBuffer() {
 - **内存区域**：`mooncake-store/include/allocator.h` 的 `AllocatedBuffer`(`:39`)、`Descriptor`(`:83`)、`allocator_`(`:96`)；析构在 `src/allocator.cpp:45`。
 - **副本**：`mooncake-store/include/replica.h` 的 `ReplicaStatus`(`:52`)、各 `*ReplicaData`(`:203`–`:232`)、`Replica`(`:259`)、`Descriptor`(`:566`)、`data_`(`:700`)、`is_busy`(`:386`)、`mark_complete`(`:511`)、`has_invalid_mem_handle`(`:444`)。
 - **对象元数据**：`mooncake-store/include/master_service.h` 的 `ObjectMetadata`(`:1031`)。
-- **测试**：`mooncake-store/tests/replica_selection_test.cpp`、`segment_test.cpp`、`master_service_replication_scenario_test.cpp`。注意：`object_entry_test.cpp` / `object_index_test.cpp` 在该 tag 不存在。
+- **测试**：`mooncake-store/tests/replica_selection_test.cpp`、`segment_test.cpp`、`dynamic_replication_test.cpp`。注意：`object_entry_test.cpp` / `object_index_test.cpp` 在该 tag 不存在。
 
 **结论**：Mooncake 的对象组织是**五层映射**——key → `ObjectMetadata`（不可移动，含副本表与生命周期字段）→ `Replica`（variant 区分介质 + 状态机 + busy 计数）→ `AllocatedBuffer`（地址 + 弱引用分配器）→ `Segment`（物理内存段）。`Replica::Descriptor` 是元数据与数据分路的落点：它携带 `transport_endpoint_` 与 `buffer_address_`，让 TE 在不经过 Master 的情况下直连数据。
 

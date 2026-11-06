@@ -254,7 +254,7 @@ if (retry_count == 0) {
 
 ## 7.9 验证与结论
 
-- **头文件**：`mooncake-transfer-engine/include/topology.h` 的 `TopologyEntry`(L38)、`Topology::toJson`(L44)、`Topology`(L64)、`selectDevice`(L92)、`selectDeviceByLocalHca`(L95)、`parse`(L81)；`include/multi_transport_locality.h` 的 `segmentHost`(L32)、`isGpuIpcReachableTarget`(L72)。
+- **头文件**：`mooncake-transfer-engine/include/topology.h` 的 `TopologyEntry`(L38)、`TopologyEntry::toJson`(L45)、`Topology`(L64)、`Topology::toJson`(L87)、`selectDevice`(L92)、`selectDeviceByLocalHca`(L95)、`parse`(L81)；`include/multi_transport_locality.h` 的 `segmentHost`(L32)、`isGpuIpcReachableTarget`(L72)。
 - **拓扑发现**：`mooncake-transfer-engine/src/topology.cpp` 的 `discover`(L625)、`discoverCpuTopology`(L453)、`discoverCudaTopology`(L535)、`getPciDistance`(L494)、`resolve`(L794)、`selectDevice`(L761)、`selectDeviceByLocalHca`(L731)、`disableDevice`(L836)、`parse`(L648)。
 - **拓扑广播**：`src/transfer_metadata.cpp` 的 `priority_matrix` 写入(`L341`/`L462`/`L485`)与 `topology.parse`(`L672`/`L878`/`L914`)。
 - **路由与选择**：`src/multi_transport.cpp` 的 `selectTransport`(L581)；`src/transport/rdma_transport/worker_pool.cpp` 的 `selectPeerDevice`(L52)、`selectPeerDevice` 调用(`L198`)、rkey 绑定(`L225`)、rail 替代(`L231`)、target 冷却(`L185`)、拓扑刷新(`L1197`)；`src/transport/rdma_transport/rdma_transport.cpp` 的 `selectDevice`(L1155)、`selectDeviceByLocalHca`(L1204)、`initializeRdmaResources`(L1112)。

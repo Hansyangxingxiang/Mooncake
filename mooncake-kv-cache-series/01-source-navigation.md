@@ -41,9 +41,9 @@ RealClient                                      real_client.h / real_client.cpp
 Client（PyClient 的实现）                        client_service.cpp
   │
   ├── 元数据路径 ─────────────────────────────────────────────┐
-  │   Put:    master_client_.PutStart(...)        :1853      │
+  │   Put:    master_client_.PutStart(...)        :1882      │
   │           master_client_.PutEnd / PutRevoke               │
-  │   Get:    master_client_.BatchQuery(...)      :4033      │
+  │   Get:    BatchGetReplicaList(...)           :1234       │
   │                                                            ▼
   │                                              MasterService（独立进程）
   │                                                PutStart   master_service.cpp:4292

@@ -295,7 +295,7 @@ if (query_result.error() == ErrorCode::OBJECT_NOT_FOUND ||
 - **Get 主流程**：`real_client.cpp` 的 `get_into`(`:3758`)、`get_into_range_internal`(`:3740`)、`resolve_ranged_read_metadata`(`:3456`)、`execute_ranged_read`(`:3475`)、`build_ranged_read_metadata_from_query_result`(`:4043`)、`FilterQueryResult`(`:402`)。
 - **副本选择**：`mooncake-store/include/replica_selection.h:123`；`Client::Get`(`client_service.cpp:1352`)、`FindFirstCompleteReplica`(`:4919`)、`VerifyObjectChecksum`(`:1319`)。
 - **Master 侧**：`GetReplicaList`(`master_service.cpp:3626`)、`IsReplicaReadable`(`:3546`)。
-- **测试**：`mooncake-store/tests/client_integration_test.cpp`、`master_service_scenario_test.cpp`、`replica_selection_test.cpp`（本地优先、评分选择、无可用副本返回 nullptr）、`client_numa_config_test.cpp`。
+- **测试**：`mooncake-store/tests/client_integration_test.cpp`、`master_service_scenario_test.cpp`、`replica_selection_test.cpp`（本地优先、评分选择、无可用副本返回 nullptr）。
 - **设计文档**：`docs/source/design/store/mooncake-store.md`（强一致性、lease、副本 best-effort）。
 
 **结论**：Get 分三段——`batch_query` 从 Master 拿"副本 + lease + checksum"，`SelectBestReplica` 按"状态 → 位置 → 评分"选副本，`execute_ranged_read` 按副本介质与目标设备选四条搬运路径之一。成功返回字节数，但真正的成功条件有五条，其中校验与 lease 都在**传输完成之后**判定。lease 保证读期间对象不被删除/淘汰，`COMPLETE` 过滤保证不读半写副本。
