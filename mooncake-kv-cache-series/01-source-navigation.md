@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 1.1 具体问题
 
 一个推理实例生成了 KV Cache，另一个实例怎样找到并读取它？
@@ -59,6 +61,43 @@ Client（PyClient 的实现）                        client_service.cpp
 ```
 
 两条路径的交点只有一处：**Transfer Engine 需要目标地址**。这个地址由 Master 在元数据路径上给出（segment + offset + size），之后数据搬运完全不经过 Master。
+
+### 1.3.1 分层职责：先找入口，再区分控制与搬运
+
+```mermaid
+flowchart TB
+    P["Python API：参数与返回值转换"] --> R["RealClient：buffer、slice 与读写入口"]
+    R --> C["Client：元数据协调与传输组织"]
+    C -.-> M["Master：分配、副本状态、lease"]
+    C --> T["Transfer Engine：提交、完成查询、释放"]
+    T --> B["Transport：TCP / RDMA 等"]
+    B ==> D["本地或远端存储内存"]
+```
+
+先沿实线找应用调用入口，再沿虚线确认可见性与读保护，最后沿粗线追字节的搬运。这里展示逻辑分层，不意味着每个 API 都严格经过所有节点；具体函数入口仍以本节调用链为准。
+
+### 1.3.2 最小读写时序：两个完成点
+
+```mermaid
+sequenceDiagram
+    participant A as 写入 Client
+    participant M as Master
+    participant S as 存储 Client / TE
+    participant B as 读取 Client
+    A->>M: PutStart：申请副本空间
+    M-->>A: 返回位置与 PROCESSING 副本
+    A->>S: TE WRITE
+    S-->>A: 数据传输完成
+    A->>M: PutEnd
+    M-->>A: 元数据提交成功
+    B->>M: 查询可读副本并取得 lease
+    M-->>B: 副本描述符
+    B->>S: TE READ
+    S-->>B: 传输结果
+    Note over B: 检查传输、lease 与适用的校验条件
+```
+
+数据传输完成与元数据提交成功是两个时刻。默认新对象写入路径只有在提交后才对读方可见；后续读取仍可能受淘汰、故障或 lease 到期影响。
 
 ## 1.4 三个关键代码片段
 

@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 9.1 具体问题
 
 篇8 结束在"淘汰只移除 MEMORY 副本，对象可能还有 LOCAL_DISK 副本"。这一篇把这层 SSD 存储拆成四个动作：
@@ -78,6 +80,51 @@ FileStorage::Init (file_storage.cpp:131)
         └─ NotifyOffloadSuccess（元数据来自 .meta 文件）  :186
 Heartbeat → SEGMENT_NOT_FOUND → 重新挂载 + ReRegisterOffloadedObjects :1195
 ```
+
+### 9.3.1 副本演变：下沉、淘汰与提升分别改变什么
+
+```mermaid
+stateDiagram-v2
+    [*] --> Memory: Put 提交
+    Memory --> MemoryDisk: 下沉完成并注册磁盘副本
+    MemoryDisk --> Disk: 满足条件后淘汰内存副本
+    Disk --> Promoting: 命中提升开启且任务获准
+    Promoting --> MemoryDisk: 内存写入完成并提交
+    Promoting --> Disk: 提升失败并清理未完成副本
+    Memory --> Absent: 最后有效副本被回收
+    Disk --> Absent: 最后有效副本被回收
+    MemoryDisk --> Absent: 显式删除并清理
+```
+
+状态名表示有效副本组合，不是源码枚举。`MemoryDisk` 表示两种介质共存；默认下沉不会自动删除内存副本，提升也不等于每次磁盘读取都必须发生。
+
+### 9.3.2 提交与恢复：本地可读先于向 Master 注册
+
+```mermaid
+sequenceDiagram
+    participant W as FileStorage / Worker
+    participant D as 本地文件与索引
+    participant M as Master
+    W->>D: 写 bucket 数据
+    opt uring 路径
+        W->>D: 数据 datasync
+    end
+    W->>D: 写 .meta
+    W->>D: 提交本地 object_bucket_map 索引
+    W->>M: NotifyOffloadSuccess
+    alt 注册成功
+        M-->>W: 注册 LOCAL_DISK COMPLETE 副本
+    else 通知失败并进入回滚处理
+        W->>D: 撤销本地索引，等待在途读并清理文件
+    end
+    Note over W,D: 重启 Init：校验元数据，清理无配对元数据的孤儿 bucket
+    opt 收到 SEGMENT_NOT_FOUND 后触发重新注册
+        W->>D: 读取本地有效 .meta
+        W->>M: ReRegisterOffloadedObjects 路径重新报告副本
+    end
+```
+
+图中区分文件写完、本地索引可读和 Master 可路由三个完成点。存在 `.meta` 不足以单独证明掉电持久性，数据、元数据文件及目录的同步保证需要分别核对。
 
 ## 9.4 三个关键代码片段
 
@@ -223,7 +270,7 @@ auto sync_result = uring_file->datasync();
 StoreBucketMetadata(bucket_id, bucket_metadata);      // :2704，失败则删数据文件
 ```
 
-**关键点**：这是崩溃一致性的核心约定——只有 `.meta` 存在且合法，bucket 才被认为有效；元数据永远指向已写完的数据。但要注意它**不保证数据一定已落盘**：非 uring 路径没有显式 `fsync`，掉电后可能出现 `.meta` 在、数据块损坏的情况。**分析（推断）**：这是把持久化强度交给后端配置——`USE_URING`/O_DIRECT 路径买 durability，回退路径买可用性；对可重算的 KV Cache 通常可接受，但对"重启后必须可读"的场景需要显式选前者。
+**关键点**：这是崩溃一致性的核心约定——只有 `.meta` 存在且合法，bucket 才被认为有效；正常执行顺序是先完成数据写入，再发布元数据。但要注意它**不保证数据一定已落盘**：非 uring 路径没有显式 `fsync`，掉电后可能出现 `.meta` 在、数据块损坏的情况。**分析（推断）**：这是把持久化强度交给后端配置——数据同步会改变持久化强度，但 O_DIRECT 本身不等于掉电持久化。对“重启后必须可读”的场景，还应核实 `.meta` 文件、目录与底层设备的同步保证，不能仅凭启用 uring 就作完整承诺。
 
 崩溃后的判定在 `Init`：先遍历所有 `.meta`（`:2119`），逐个 `LoadBucketMetadata` 并校验 `data_size`/`meta_size` 非零、`keys`/`metadatas` 非空，非法就删文件（`:2194`）；再扫一遍 `.bucket`，删掉没有 `.meta` 的孤儿（`:2243`–`:2298`）。**分析（推断）**：这等于用"元数据存在性"当提交记录——不需要额外的 WAL 或 journal，代价是每个 bucket 的创建是两阶段且必须由 `Init` 兜底。
 
@@ -282,7 +329,7 @@ Heartbeat 调 `OffloadObjectHeartbeat` 时若 Master 返回 `SEGMENT_NOT_FOUND`�
 - **设计文档**：`docs/source/design/store/ssd-offload.md` 的 Heartbeat 职责(`L54`)、`PrepareEviction`/通知顺序(`L75`–`:76`)、`NotifyOffloadSuccess` 加 LOCAL_DISK 副本(`L82`/`L92`)、bucket 写入与淘汰两阶段(`L206`–`:233`)。
 - **测试**：`mooncake-store/tests/local_ssd/`、`file_storage_test.cpp`、`file_storage_promotion_test.cpp`、`offload_on_evict_test.cpp`、`promotion_on_hit_test.cpp`、`master_service_ssd_test.cpp`。
 
-**结论**：SSD 分层是**下沉 → 加载 → 恢复**三阶段，且"Master 决策、FileStorage 执行"贯穿始终。下沉在 `PutEnd` 入队，`inc_refcnt` 固定一份源副本，由 client 每 10 秒的 `Heartbeat` 取出并执行；数据经 D2H staging 后按 256MB/500 keys 切成 bucket，写成 `<id>.bucket` + `<id>.meta` 两个文件，数据先写、元数据后写（uring 路径要求 `datasync`），失败 key 用 `data_size=-1` 的 NACK 哨兵回传。落盘成功只是新增一份 LOCAL_DISK 副本，**不删 MEMORY 副本**，所以 offload 不是 eviction。加载默认关闭（`promotion_on_hit=false`），开启后由 `TryPushPromotionQueue` 过频次/水位/队列三道门槛，`PromotionAllocStart` 申请一个 PROCESSING MEMORY 副本，`BatchLoad` + `PromotionWrite` 把数据搬进去，`NotifyPromotionSuccess` 才 `mark_complete` 使其可读；失败路径幂等，TTL 600 秒兜底。恢复靠 client 在 `SEGMENT_NOT_FOUND` 后主动 `ReRegisterOffloadedObjects`，从 `.meta` 重建 Master 侧元数据。**这套设计把"数据在哪"交给 Master、"数据怎么写"交给 FileStorage，用 bucket 文件当提交记录、用 refcnt + TTL 当在途保护**——代价是两阶段提交和一个需要 Init 兜底的孤儿清理。
+**结论**：SSD 分层是**下沉 → 加载 → 恢复**三阶段，且"Master 决策、FileStorage 执行"贯穿始终。下沉在 `PutEnd` 入队，`inc_refcnt` 固定一份源副本，由 client 每 10 秒的 `Heartbeat` 取出并执行；数据经 D2H staging 后按 256MB/500 keys 切成 bucket，写成 `<id>.bucket` + `<id>.meta` 两个文件，数据先写、元数据后写（uring 路径要求 `datasync`），失败 key 用 `data_size=-1` 的 NACK 哨兵回传。落盘成功只是新增一份 LOCAL_DISK 副本，**不删 MEMORY 副本**，所以 offload 不是 eviction。加载默认关闭（`promotion_on_hit=false`），开启后由 `TryPushPromotionQueue` 过频次/水位/队列三道门槛，`PromotionAllocStart` 申请一个 PROCESSING MEMORY 副本，`BatchLoad` + `PromotionWrite` 把数据搬进去，`NotifyPromotionSuccess` 才 `mark_complete` 使其可读；失败路径幂等，TTL 600 秒兜底。恢复靠 client 在 `SEGMENT_NOT_FOUND` 后主动 `ReRegisterOffloadedObjects`，从 `.meta` 重建 Master 侧元数据。**这套设计把"数据在哪"交给 Master、"数据怎么写"交给 FileStorage，用 bucket 文件当提交记录、用 refcnt + TTL 当在途保护**——代价是分阶段发布及需要 Init 兜底的孤儿清理；这不等同于数据库 2PC。
 
 下一篇回到推理请求侧，看 vLLM 如何通过一次前缀命中跳过 Prefill。
 

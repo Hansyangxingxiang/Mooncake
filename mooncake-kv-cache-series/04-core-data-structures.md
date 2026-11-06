@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 4.1 具体问题
 
 一个 KV Cache 对象的 key 变成一个可被 RDMA 读取的内存地址，中间经过了几层结构？每一层各自负责什么，谁持有谁，谁负责释放？
@@ -58,6 +60,36 @@ Segment（存储节点的一段连续内存）                    types.h:433
 ```
 
 注意这条链上出现了**两种 Descriptor**：`Replica::Descriptor`（副本级，含状态）和 `AllocatedBuffer::Descriptor`（内存级，含地址）。前者是后者加上类型和状态的外壳。
+
+### 4.3.1 所有权与数量关系
+
+```mermaid
+flowchart LR
+    K["key"] --> O["ObjectMetadata"]
+    O -->|"管理多个副本"| R["ReplicaList"]
+    R --> P["Replica：状态、介质、refcnt"]
+    P -->|"MEMORY 分支持有"| B["AllocatedBuffer"]
+    B -.->|"弱引用分配器"| A["BufferAllocator"]
+    B -->|"描述地址与长度"| D["AllocatedBuffer Descriptor"]
+    D -.->|"定位存储范围"| S["Store Segment"]
+    P -->|"其他介质分支"| F["NoF / Disk / LocalDisk / DFS"]
+```
+
+实线表示对象关联或持有关系，虚线表示引用或定位关系。Descriptor 是供传输使用的描述信息，不持有远端内存；`refcnt` 表示在途使用信号，也不等于客户端读 lease。
+
+### 4.3.2 地址映射：对象、副本与传输分片
+
+```mermaid
+flowchart TB
+    O["一个对象的逻辑字节范围"] --> R["一个 MEMORY 副本的分配范围"]
+    R --> B["segment 内的 buffer_address 与 size"]
+    B --> T["TE request：源地址、目标地址、长度"]
+    T --> S1["传输 slice 1"]
+    T --> S2["传输 slice 2"]
+    T --> SN["传输 slice N"]
+```
+
+这张图表达映射关系，不承诺一个 Store slice 固定对应一个 TE slice。Store 的切片与后端为调度、长度限制而执行的传输切片属于不同层次；不要把 segment、对象和 slice 当成同一个分配单位。
 
 ## 4.4 三个关键代码片段
 

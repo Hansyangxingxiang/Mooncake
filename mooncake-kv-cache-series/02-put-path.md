@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 2.1 具体问题
 
 客户端 Put 返回成功的那一刻，另一个客户端是否已经能读取？如果不能，差在哪里？
@@ -40,6 +42,45 @@ Client::Put                                        client_service.cpp:1853
         ├─ PutEnd(replica_type)    对象可见
         └─ PutRevoke(replica_type) 对象不可见
 ```
+
+### 2.3.1 写入时序：可见性由提交控制
+
+```mermaid
+sequenceDiagram
+    participant A as 写入 Client
+    participant M as Master
+    participant S as 存储节点 / TE
+    A->>M: PutStart
+    M-->>A: 分配地址，副本 PROCESSING
+    Note over M: 未完成副本不可被选作可读副本
+    A->>S: TE WRITE
+    alt 传输满足当前副本策略
+        S-->>A: 数据传输完成
+        A->>M: PutEnd：提交成功副本类别
+        Note over M: 副本转为 COMPLETE
+        M-->>A: 提交响应
+    else 传输失败且无法满足策略
+        A->>M: PutRevoke：撤销未完成副本
+        M-->>A: 回滚结果
+    end
+    Note over A,M: 若 PutEnd 响应丢失，客户端无法仅凭超时判定是否已提交
+```
+
+本图采用默认新对象写入路径；双副本策略的分类提交与撤销见 2.6。响应丢失属于结果不确定：重试时要结合已存在 key 的处理语义，不能直接把它当成“服务端没有写入”。
+
+### 2.3.2 副本状态：数据写完还不等于可读
+
+```mermaid
+stateDiagram-v2
+    [*] --> PROCESSING: PutStart 分配
+    PROCESSING --> PROCESSING: 数据传输完成，尚未提交
+    PROCESSING --> COMPLETE: PutEnd 接受提交
+    PROCESSING --> Reclaimed: 撤销或超时清理
+    COMPLETE --> Reclaimed: 满足保护条件后删除或淘汰
+    Reclaimed --> [*]
+```
+
+`Reclaimed` 是图示中的资源回收结果，不是新增的源码枚举。PutStart/PutEnd 是分阶段写入协议；这里不据此宣称具备数据库两阶段提交（2PC）的全部事务保证。
 
 ## 2.4 三个关键代码片段
 

@@ -4,6 +4,8 @@
 > 版本锚点：`v0.3.13.post1`（commit `7197358`）
 > 源码链接基座：`https://github.com/kvcache-ai/Mooncake/blob/v0.3.13.post1/`
 
+> 阅读与验证约定见[系列指南](README.md)。本篇的源码行号沿用历史版本；图示为逻辑解释，引用测试不代表已执行。
+
 ## 3.1 具体问题
 
 Get 拿到一个 key，怎么知道该去哪读？多个副本时读哪个？读回来了怎么确认这次读有效？
@@ -49,6 +51,54 @@ Client::Get                                       client_service.cpp:1352
   ├─ VerifyObjectChecksum（可选）                  :1319
   └─ lease 过期检查（在传输之后）
 ```
+
+### 3.3.1 读取决策：先判断可读，再选择搬运路径
+
+```mermaid
+flowchart TD
+    Q["查询副本与 lease"] --> V{"有可用的可读副本？"}
+    V -->|否| E["返回相应查询或副本错误"]
+    V -->|是| S["按本地性与评分选副本"]
+    S --> K{"介质与目标 buffer 条件"}
+    K -->|"MEMORY，可直读"| T["TE 读入目标 buffer"]
+    K -->|"MEMORY，需设备中转"| H["主机暂存后复制到目标"]
+    K -->|LOCAL_DISK| L["存储节点执行 offload 读取路径"]
+    K -->|"DISK / DFS"| F["临时 buffer 后 scatter"]
+    T --> C["检查传输结果、lease 与适用的校验"]
+    H --> C
+    L --> C
+    F --> C
+    C --> R{"成功条件全部满足？"}
+    R -->|是| OK["返回读取字节数"]
+    R -->|否| ERR["返回错误，不接受此次读取结果"]
+```
+
+“直读”说明目标 buffer 的使用方式，不自动等价于所有后端都没有拷贝。查询、数据传输和完成检查的错误应分别保留，方便上层决定重试或重算。
+
+### 3.3.2 lease 到期：读到字节不代表结果可接受
+
+```mermaid
+sequenceDiagram
+    participant C as 读取 Client
+    participant M as Master
+    participant E as 淘汰线程
+    participant S as 存储节点
+    C->>M: 查询副本
+    M-->>C: 描述符与 lease
+    C->>S: 开始读取
+    E->>M: 检查淘汰条件
+    M-->>E: 普通淘汰路径受有效 lease 保护
+    Note over C,E: 时间推进，lease 到期；不意味着立即回收
+    S-->>C: 传输返回
+    C->>C: 复查 lease
+    alt lease 已过期
+        C-->>C: 返回 LEASE_EXPIRED，不使用本次结果
+    else lease 仍有效且其他检查通过
+        C-->>C: 返回成功
+    end
+```
+
+lease 保护的是承诺的时间窗口，不能把任意长的传输都算作受保护读取。强制删除等特殊路径另见篇8；图中不把“到期”与“发生删除”视作同一事件。
 
 ## 3.4 三个关键代码片段
 
@@ -146,7 +196,7 @@ auto get_result = client_->Get(key, filtered_qr, slices, src_offset);
 
 | 副本类型 | 目标 | 路径 | 为什么 |
 |---|---|---|---|
-| MEMORY | 主机且可 memcpy | TE 直读到目标 buffer | 零拷贝 |
+| MEMORY | 主机且可直读 | TE 读到目标 buffer | 避免额外应用层暂存拷贝；后端内部拷贝另论 |
 | MEMORY | GPU 但不可直读 | 主机暂存 → `scatter_host_to_maybe_device` | GPU 内存未注册给 TE 时只能中转 |
 | LOCAL_DISK | 任意 | offload RPC 直读目标 buffer | SSD 侧直接写目标 |
 | DISK / DFS | 任意 | 临时 buffer → scatter | `allocateSlices` 要求全对象 slice |
@@ -168,7 +218,7 @@ inline QueryResult FilterQueryResult(const QueryResult &qr,
 
 > **观点**：这是"选一次、用一次"的防御性设计。代价是多一次拷贝构造，收益是避免两处独立决策不一致——这类 bug 很难复现。
 
-## 3.5 完成判断：Get 成功的四个条件
+## 3.5 完成判断：Get 成功的条件
 
 `get_into` 的成功返回值是**读取的字节数**（`int64_t`），负值为错误码。但正数只说明最后一层；完整条件是：
 
