@@ -159,6 +159,7 @@ TEST_F(TransferMetadataTest, NcclMetadataAndHandshakePayloadRoundTrip) {
                   [](const TransferMetadata::HandShakeDesc& peer,
                      TransferMetadata::HandShakeDesc& local) {
                       local.payload = "reply:" + peer.payload;
+                      local.auto_gid_reprobe_from = peer.auto_gid_reprobe_from;
                       return 0;
                   },
                   port, sockfd),
@@ -187,9 +188,19 @@ TEST_F(TransferMetadataTest, NcclMetadataAndHandshakePayloadRoundTrip) {
 
     TransferMetadata::HandShakeDesc request;
     request.payload = "bootstrap";
+    request.auto_gid_reprobe_from = "gid-before-reprobe";
     TransferMetadata::HandShakeDesc response;
     ASSERT_EQ(client.sendHandshake(server_name, request, response), 0);
     EXPECT_EQ(response.payload, "reply:bootstrap");
+    EXPECT_EQ(response.auto_gid_reprobe_from, "gid-before-reprobe");
+
+    TransferMetadata::HandShakeDesc legacy_request;
+    legacy_request.payload = "legacy";
+    TransferMetadata::HandShakeDesc legacy_response;
+    ASSERT_EQ(
+        client.sendHandshake(server_name, legacy_request, legacy_response), 0);
+    EXPECT_EQ(legacy_response.payload, "reply:legacy");
+    EXPECT_TRUE(legacy_response.auto_gid_reprobe_from.empty());
 }
 
 // add, get and remove RPCMetaEntryMeta
@@ -1052,6 +1063,34 @@ TEST(HandshakeFrameTest, RejectsInvalidLength) {
     auto [zero_type, zero_payload] = readString(fds[1]);
     EXPECT_EQ(zero_type, HandShakeRequestType::Invalid);
     EXPECT_TRUE(zero_payload.empty());
+
+    close(fds[0]);
+    close(fds[1]);
+}
+
+TEST(HandshakeFrameTest, WriteToSilentPeerFailsWithinSendTimeout) {
+    int fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+    // Nobody reads fds[1], so a payload far larger than the send buffer
+    // stalls the writer. With SO_SNDTIMEO the write has to fail fast instead
+    // of blocking (or spinning on EAGAIN) forever.
+    int sndbuf = 4096;
+    ASSERT_EQ(
+        setsockopt(fds[0], SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf)), 0);
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+    ASSERT_EQ(
+        setsockopt(fds[0], SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)),
+        0);
+
+    const std::string payload(8 << 20, 'x');
+    const auto start = std::chrono::steady_clock::now();
+    EXPECT_EQ(writeString(fds[0], HandShakeRequestType::Metadata, payload),
+              ERR_SOCKET);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    EXPECT_LT(elapsed, std::chrono::seconds(30));
 
     close(fds[0]);
     close(fds[1]);
