@@ -36,6 +36,7 @@
 #include <cuda_runtime.h>
 
 #include "tent/common/config.h"
+#include "tent/metrics/tent_metrics.h"
 #include "tent/runtime/control_plane.h"
 #include "tent/runtime/transfer_engine_impl.h"
 #include "tent/transport/mnnvl/mnnvl_transport.h"
@@ -70,6 +71,10 @@ class TransferEngineImplTestPeer {
         tent::TransferEngineImpl& engine) {
         return engine.metadata_;
     }
+    static void requireFabric(tent::TransferEngineImpl& engine) {
+        engine.mnnvl_config_.require_fabric = true;
+        engine.mnnvl_config_.egm_enabled = false;
+    }
 };
 
 namespace tent {
@@ -82,16 +87,24 @@ class MnnvlTransportTestPeer {
                                                      target_id);
     }
     static void configureLocalCopies(MnnvlTransport& transport,
-                                     std::shared_ptr<ControlService> metadata) {
+                                     std::shared_ptr<ControlService> metadata,
+                                     bool gpu_wait, size_t capacity = 1,
+                                     bool completion_event_pool = true) {
         transport.metadata_ = std::move(metadata);
         transport.platform_ =
             dynamic_cast<CudaPlatform*>(&Platform::getLoader());
+        transport.options_.require_fabric = true;
         transport.handle_type_ = CU_MEM_HANDLE_TYPE_FABRIC;
+        transport.options_.gpu_wait = gpu_wait;
         transport.caps.gpu_to_gpu = true;
+        transport.options_.completion_event_pool = completion_event_pool;
+        transport.completion_pool_ = std::make_shared<MnnvlCompletionEventPool>(
+            completion_event_pool ? capacity : 0);
     }
     static void configureRegistration(
         MnnvlTransport& transport, std::shared_ptr<ControlService> metadata) {
-        configureLocalCopies(transport, std::move(metadata));
+        configureLocalCopies(transport, std::move(metadata), false);
+        transport.options_.require_fabric = false;
         transport.handle_type_ = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
     }
 
@@ -156,6 +169,11 @@ class MnnvlTransportTestPeer {
     static Status allocationRange(MnnvlTransport& transport, uint64_t address,
                                   size_t length, uint64_t& base, size_t& size) {
         return transport.getLocalAllocationRange(address, length, base, size);
+    }
+
+    static size_t idle(MnnvlCompletionEventPool& pool, int device) {
+        std::lock_guard<std::mutex> lock(pool.mutex_);
+        return pool.idle_[device].size();
     }
 };
 
@@ -363,6 +381,7 @@ Status installLocalSegmentWithMnnvlHandle(ControlService& metadata,
             buffer.length = length;
             buffer.location = "cuda:0";
             buffer.mnnvl_handle = mnnvl_handle;
+            buffer.transports = {MNNVL};
             memory.buffers.push_back(std::move(buffer));
             return Status::OK();
         });
@@ -1079,14 +1098,47 @@ class MnnvlCompletionTest : public ::testing::Test {
                     return Status::OK();
                 })
                 .ok());
-        MnnvlTransportTestPeer::configureLocalCopies(transport_, metadata_);
+        MnnvlTransportTestPeer::configureLocalCopies(transport_, metadata_,
+                                                     true);
         ASSERT_TRUE(transport_.allocateSubBatch(batch_, 16).ok());
+#if TENT_METRICS_ENABLED
+        auto& metrics = TentMetrics::instance();
+        metrics.shutdown();
+        MetricsConfig config;
+        config.enabled = true;
+        config.http_port = 19876;
+        config.report_interval_seconds = 0;
+        ASSERT_TRUE(metrics.initialize(config).ok());
+        TentMetrics::setEnabled(true);
+#endif
     }
     void TearDown() override {
+        release_.store(true);
+        if (watchdog_.joinable()) watchdog_.join();
         if (batch_) EXPECT_TRUE(transport_.freeSubBatch(batch_).ok());
         if (source_) (void)cudaFree(source_);
         if (target_) (void)cudaFree(target_);
         if (other_) (void)cudaFree(other_);
+#if TENT_METRICS_ENABLED
+        TentMetrics::instance().shutdown();
+#endif
+    }
+    static void CUDART_CB waitForRelease(void* opaque) {
+        auto* release = static_cast<std::atomic<bool>*>(opaque);
+        while (!release->load())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    void delayProducer(cudaStream_t stream = cudaStreamPerThread) {
+        release_.store(false);
+        // Bounded even if a regression accidentally makes gpu_wait
+        // CPU-blocking.
+        watchdog_ = std::thread([this] {
+            for (int i = 0; i < 2000 && !release_.load(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            release_.store(true);
+        });
+        ASSERT_EQ(cudaLaunchHostFunc(stream, waitForRelease, &release_),
+                  cudaSuccess);
     }
     Request request(Request::OpCode op = Request::WRITE,
                     void* target = nullptr) {
@@ -1125,6 +1177,8 @@ class MnnvlCompletionTest : public ::testing::Test {
     std::shared_ptr<ControlService> metadata_;
     MnnvlTransport transport_;
     Transport::SubBatchRef batch_{nullptr};
+    std::atomic<bool> release_{true};
+    std::thread watchdog_;
 };
 
 TEST_F(MnnvlCompletionTest, DefaultPlatformSupportsTopologyDiscovery) {
@@ -1140,6 +1194,7 @@ TEST_F(MnnvlCompletionTest, DefaultPlatformSupportsTopologyDiscovery) {
 
 TEST_F(MnnvlCompletionTest, VerboseLogsDescribeEachSubmissionAndCompletion) {
     MnnvlLogSink logs(1);
+    delayProducer();
     ASSERT_EQ(
         cudaMemsetAsync(source_, 0x5a, kBufferLength, cudaStreamPerThread),
         cudaSuccess);
@@ -1150,9 +1205,15 @@ TEST_F(MnnvlCompletionTest, VerboseLogsDescribeEachSubmissionAndCompletion) {
     EXPECT_EQ(logs.count("MnnvlTransport: submit batch="), 1);
     EXPECT_EQ(
         logs.count("tasks=2 bytes=8192 reads=0 writes=2 local=2 remote=0"), 1);
-    EXPECT_EQ(logs.count("handle_type=fabric"), 1);
+    EXPECT_EQ(logs.count("handle_type=fabric sync_mode=gpu_wait"), 1);
     EXPECT_EQ(logs.count("MnnvlTransport: copy stream ready batch="), 1);
+    TransferStatus pending;
+    ASSERT_TRUE(transport_.getTransferStatus(batch_, 0, pending).ok());
+    EXPECT_EQ(pending.s, PENDING);
+    ASSERT_TRUE(transport_.getTransferStatus(batch_, 1, pending).ok());
+    EXPECT_EQ(pending.s, PENDING);
     EXPECT_EQ(logs.count("MnnvlTransport: complete batch="), 0);
+    release_.store(true);
     EXPECT_EQ(finish(0).s, COMPLETED);
     EXPECT_EQ(finish(1).s, COMPLETED);
     for (int i = 0; i < 4; ++i) {
@@ -1182,6 +1243,7 @@ TEST_F(MnnvlCompletionTest, TransferLogsAreQuietWhenVerboseLoggingIsDisabled) {
     EXPECT_EQ(logs.count("MnnvlTransport: submit batch="), 0);
     EXPECT_EQ(logs.count("MnnvlTransport: complete batch="), 0);
     EXPECT_EQ(logs.count("MnnvlTransport: copy stream ready batch="), 0);
+    EXPECT_EQ(logs.count("MnnvlTransport: completion event pool"), 0);
     expectPattern(target_, 0x69);
 }
 
@@ -1199,6 +1261,38 @@ TEST_F(MnnvlCompletionTest, VerboseCompletionFailureIsLoggedOncePerGroup) {
 }
 #endif
 
+TEST_F(MnnvlCompletionTest, GpuWaitOrdersDelayedCallerAndSharesPolling) {
+    delayProducer();
+    ASSERT_EQ(
+        cudaMemsetAsync(source_, 0x5a, kBufferLength, cudaStreamPerThread),
+        cudaSuccess);
+    auto first = request();
+    auto second = request(Request::WRITE, other_);
+    ASSERT_TRUE(transport_.submitTransferTasks(batch_, {first, second}).ok());
+    EXPECT_FALSE(release_.load()) << "gpu_wait blocked the submitting CPU";
+#if TENT_METRICS_ENABLED
+    auto query_count = [] {
+        return json::parse(TentMetrics::instance().getJsonMetrics())
+            .value("tent_mnnvl_completion_query_total", uint64_t{0});
+    };
+    const auto before = query_count();
+#endif
+    TransferStatus status;
+    ASSERT_TRUE(transport_.getTransferStatus(batch_, 0, status).ok());
+    EXPECT_EQ(status.s, PENDING);
+    ASSERT_TRUE(transport_.getTransferStatus(batch_, 1, status).ok());
+    EXPECT_EQ(status.s, PENDING);
+#if TENT_METRICS_ENABLED
+    EXPECT_EQ(query_count() - before, 1);
+#endif
+    release_.store(true);
+    EXPECT_EQ(finish(0).s,
+              COMPLETED);  // Repeated/equal ordinal must query again.
+    EXPECT_EQ(finish(1).s, COMPLETED);
+    expectPattern(target_, 0x5a);
+    expectPattern(other_, 0x5a);
+}
+
 TEST_F(MnnvlCompletionTest,
        AppendedSubmissionsAndCallerEventRerecordAreIndependent) {
     ASSERT_EQ(
@@ -1206,6 +1300,7 @@ TEST_F(MnnvlCompletionTest,
         cudaSuccess);
     ASSERT_TRUE(transport_.submitTransferTasks(batch_, {request()}).ok());
     EXPECT_EQ(finish(0).s, COMPLETED);
+    delayProducer();
     ASSERT_EQ(
         cudaMemsetAsync(source_, 0xa7, kBufferLength, cudaStreamPerThread),
         cudaSuccess);
@@ -1218,12 +1313,17 @@ TEST_F(MnnvlCompletionTest,
     EXPECT_NE(batch->completion_groups[0]->event,
               batch->completion_groups[1]->event);
     EXPECT_EQ(finish(0).s, COMPLETED);
+    TransferStatus pending;
+    ASSERT_TRUE(transport_.getTransferStatus(batch_, 1, pending).ok());
+    EXPECT_EQ(pending.s, PENDING);
+    release_.store(true);
     EXPECT_EQ(finish(1).s, COMPLETED);
     expectPattern(target_, 0x3c);
     expectPattern(other_, 0xa7);
 }
 
 TEST_F(MnnvlCompletionTest, CpuBlockAndReadKeepExistingOrdering) {
+    MnnvlTransportTestPeer::configureLocalCopies(transport_, metadata_, false);
     ASSERT_EQ(
         cudaMemsetAsync(target_, 0x69, kBufferLength, cudaStreamPerThread),
         cudaSuccess);
@@ -1231,6 +1331,75 @@ TEST_F(MnnvlCompletionTest, CpuBlockAndReadKeepExistingOrdering) {
         transport_.submitTransferTasks(batch_, {request(Request::READ)}).ok());
     EXPECT_EQ(finish(0).s, COMPLETED);
     expectPattern(source_, 0x69);
+}
+
+TEST_F(MnnvlCompletionTest, CopyWaitsForRequestProducerEvent) {
+    CUDAStreamPool pool;
+    CUDAStreamHandle producer_stream;
+    ASSERT_TRUE(pool.acquire(producer_stream, 0).ok());
+    ASSERT_EQ(cudaMemset(source_, 0, kBufferLength), cudaSuccess);
+    cudaEvent_t producer_event = nullptr;
+    ASSERT_EQ(cudaEventCreateWithFlags(&producer_event, cudaEventDisableTiming),
+              cudaSuccess);
+
+    struct Gate {
+        std::atomic<bool> released{false};
+        cudaStream_t stream;
+        ~Gate() {
+            released.store(true);
+            cudaStreamSynchronize(stream);
+        }
+    } gate{{false}, producer_stream.get()};
+    ASSERT_EQ(cudaLaunchHostFunc(
+                  producer_stream.get(),
+                  [](void* data) {
+                      auto& gate = *static_cast<Gate*>(data);
+                      // Bound the wait even if the test exits unexpectedly.
+                      auto deadline = std::chrono::steady_clock::now() +
+                                      std::chrono::seconds(5);
+                      while (!gate.released.load() &&
+                             std::chrono::steady_clock::now() < deadline)
+                          std::this_thread::yield();
+                  },
+                  &gate),
+              cudaSuccess);
+    ASSERT_EQ(
+        cudaMemsetAsync(source_, 0x5a, kBufferLength, producer_stream.get()),
+        cudaSuccess);
+    ASSERT_EQ(cudaEventRecord(producer_event, producer_stream.get()),
+              cudaSuccess);
+
+    auto req = request();
+    req.producer_event = producer_event;
+    ASSERT_TRUE(transport_.submitTransferTasks(batch_, {req}).ok());
+    TransferStatus before_release{};
+    EXPECT_TRUE(transport_.getTransferStatus(batch_, 0, before_release).ok());
+    EXPECT_EQ(before_release.s, PENDING);
+    gate.released.store(true);
+    EXPECT_EQ(finish(0).s, COMPLETED);
+    expectPattern(target_, 0x5a);
+    EXPECT_EQ(cudaEventDestroy(producer_event), cudaSuccess);
+}
+
+TEST_F(MnnvlCompletionTest, ExternalProducerFenceRemainsEffective) {
+    cudaStream_t producer;
+    cudaEvent_t ready;
+    ASSERT_EQ(cudaStreamCreateWithFlags(&producer, cudaStreamNonBlocking),
+              cudaSuccess);
+    ASSERT_EQ(cudaEventCreateWithFlags(&ready, cudaEventDisableTiming),
+              cudaSuccess);
+    delayProducer(producer);
+    ASSERT_EQ(cudaMemsetAsync(target_, 0x42, kBufferLength, producer),
+              cudaSuccess);
+    ASSERT_EQ(cudaEventRecord(ready, producer), cudaSuccess);
+    ASSERT_EQ(cudaStreamWaitEvent(cudaStreamPerThread, ready, 0), cudaSuccess);
+    ASSERT_TRUE(
+        transport_.submitTransferTasks(batch_, {request(Request::READ)}).ok());
+    release_.store(true);
+    EXPECT_EQ(finish(0).s, COMPLETED);
+    expectPattern(source_, 0x42);
+    EXPECT_EQ(cudaEventDestroy(ready), cudaSuccess);
+    EXPECT_EQ(cudaStreamDestroy(producer), cudaSuccess);
 }
 
 TEST_F(MnnvlCompletionTest, FailedValidationPreservesEarlierTasks) {
@@ -1249,6 +1418,438 @@ TEST_F(MnnvlCompletionTest, FailedValidationPreservesEarlierTasks) {
     expectPattern(target_, 0x12);
 }
 
+TEST_F(MnnvlCompletionTest, EarlyReleaseDrainsBeforeStreamReuse) {
+    delayProducer();
+    ASSERT_EQ(
+        cudaMemsetAsync(source_, 0x7b, kBufferLength, cudaStreamPerThread),
+        cudaSuccess);
+    ASSERT_TRUE(transport_.submitTransferTasks(batch_, {request()}).ok());
+    std::thread releaser([this] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        release_.store(true);
+    });
+    const auto status = transport_.freeSubBatch(batch_);
+    EXPECT_TRUE(release_.load())
+        << "SubBatch release did not drain pending copies";
+    releaser.join();
+    EXPECT_TRUE(status.ok());
+    expectPattern(target_, 0x7b);
+}
+
+TEST_F(MnnvlCompletionTest, PoolBoundsDevicesAndNeverRetainsPendingEvents) {
+    auto pool = std::make_shared<MnnvlCompletionEventPool>(1);
+    MnnvlCompletionEvent first, second;
+    ASSERT_TRUE(pool->acquire(0, first).ok());
+    ASSERT_TRUE(pool->acquire(0, second).ok());
+    ASSERT_EQ(cudaEventRecord(first.event, cudaStreamPerThread), cudaSuccess);
+    ASSERT_EQ(cudaEventRecord(second.event, cudaStreamPerThread), cudaSuccess);
+    ASSERT_EQ(cudaEventSynchronize(second.event), cudaSuccess);
+    pool->release(0, first, true);
+    pool->release(0, second, true);
+    EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 1);
+    MnnvlCompletionEvent reused;
+    ASSERT_TRUE(pool->acquire(0, reused).ok());
+    EXPECT_EQ(first.event, reused.event);
+    delayProducer();
+    {
+        MnnvlCompletion pending;
+        pending.pool = pool;
+        pending.device = 0;
+        static_cast<MnnvlCompletionEvent&>(pending) = reused;
+        ASSERT_EQ(cudaEventRecord(reused.event, cudaStreamPerThread),
+                  cudaSuccess);
+        pending.recorded = true;
+    }
+    EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 0);
+    release_.store(true);
+    ASSERT_EQ(cudaStreamSynchronize(cudaStreamPerThread), cudaSuccess);
+    int count = 0;
+    ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+    if (count > 1) {
+        MnnvlCompletionEvent device_one;
+        ASSERT_TRUE(pool->acquire(1, device_one).ok());
+        int caller;
+        ASSERT_EQ(cudaGetDevice(&caller), cudaSuccess);
+        EXPECT_EQ(caller, 0);
+        ASSERT_EQ(cudaSetDevice(1), cudaSuccess);
+        ASSERT_EQ(cudaEventRecord(device_one.event, cudaStreamPerThread),
+                  cudaSuccess);
+        ASSERT_EQ(cudaEventSynchronize(device_one.event), cudaSuccess);
+        ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
+        pool->release(1, device_one, true);
+        EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 1), 1);
+        EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 0);
+        MnnvlCompletionEvent device_one_reused;
+        ASSERT_TRUE(pool->acquire(1, device_one_reused).ok());
+        EXPECT_EQ(device_one.event, device_one_reused.event);
+        ASSERT_EQ(cudaGetDevice(&caller), cudaSuccess);
+        EXPECT_EQ(caller, 0);
+        pool->release(1, device_one_reused, true);
+    }
+    auto zero = std::make_shared<MnnvlCompletionEventPool>(0);
+    MnnvlCompletionEvent discarded;
+    ASSERT_TRUE(zero->acquire(0, discarded).ok());
+    ASSERT_EQ(cudaEventRecord(discarded.event, cudaStreamPerThread),
+              cudaSuccess);
+    ASSERT_EQ(cudaEventSynchronize(discarded.event), cudaSuccess);
+    zero->release(0, discarded, true);
+    EXPECT_EQ(MnnvlTransportTestPeer::idle(*zero, 0), 0);
+}
+
+TEST_F(MnnvlCompletionTest, DestroyedContextsDoNotConsumePoolCapacity) {
+#if CUDA_VERSION < 12000
+    GTEST_SKIP() << "Context lifetime detection requires CUDA 12+ headers";
+#else
+    CUcontext caller = nullptr;
+    ASSERT_EQ(cuCtxGetCurrent(&caller), CUDA_SUCCESS);
+    CUdevice device;
+    ASSERT_EQ(cuDeviceGet(&device, 0), CUDA_SUCCESS);
+    auto destroy_context = [caller](CUcontext context) {
+        EXPECT_EQ(cuCtxDestroy(context), CUDA_SUCCESS);
+        EXPECT_EQ(cuCtxSetCurrent(caller), CUDA_SUCCESS);
+    };
+    for (bool acquire_before_destroy : {false, true}) {
+        SCOPED_TRACE(::testing::Message()
+                     << "acquire_before_destroy=" << acquire_before_destroy);
+        CUcontext raw = nullptr;
+#if CUDA_VERSION >= 13000
+        ASSERT_EQ(cuCtxCreate(&raw, nullptr, 0, device), CUDA_SUCCESS);
+#else
+        ASSERT_EQ(cuCtxCreate(&raw, 0, device), CUDA_SUCCESS);
+#endif
+        std::unique_ptr<CUctx_st, decltype(destroy_context)> context_a(
+            raw, destroy_context);
+        auto pool = std::make_shared<MnnvlCompletionEventPool>(1);
+        {
+            MnnvlCompletion cached;
+            cached.pool = pool;
+            cached.device = 0;
+            ASSERT_TRUE(pool->acquire(0, cached).ok());
+            ASSERT_EQ(cached.context, context_a.get());
+            ASSERT_EQ(cudaEventRecord(cached.event, cudaStreamPerThread),
+                      cudaSuccess);
+            cached.recorded = true;
+            ASSERT_EQ(cudaEventSynchronize(cached.event), cudaSuccess);
+        }
+        ASSERT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 1);
+        ASSERT_EQ(cuCtxSetCurrent(caller), CUDA_SUCCESS);
+
+        // Cover both a fresh acquisition after A dies and an event already
+        // in flight when A dies. Acquisition-only pruning misses the latter.
+        cudaEvent_t retained = nullptr;
+        {
+            MnnvlCompletion live;
+            live.pool = pool;
+            live.device = 0;
+            if (!acquire_before_destroy) context_a.reset();
+            ASSERT_TRUE(pool->acquire(0, live).ok());
+            ASSERT_EQ(live.context, caller);
+            ASSERT_EQ(cudaEventRecord(live.event, cudaStreamPerThread),
+                      cudaSuccess);
+            live.recorded = true;
+            ASSERT_EQ(cudaEventSynchronize(live.event), cudaSuccess);
+            if (acquire_before_destroy) context_a.reset();
+            retained = live.event;
+        }
+        EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 1);
+        CUcontext current = nullptr;
+        ASSERT_EQ(cuCtxGetCurrent(&current), CUDA_SUCCESS);
+        EXPECT_EQ(current, caller);
+        {
+            MnnvlCompletion reused;
+            reused.pool = pool;
+            reused.device = 0;
+            ASSERT_TRUE(pool->acquire(0, reused).ok());
+            EXPECT_EQ(reused.event, retained);
+            EXPECT_EQ(reused.context, caller);
+            // Checking the slot count distinguishes a real hit from a newly
+            // allocated event that happens to reuse a destroyed event handle.
+            EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 0);
+            ASSERT_EQ(cudaEventRecord(reused.event, cudaStreamPerThread),
+                      cudaSuccess);
+            reused.recorded = true;
+            ASSERT_EQ(cudaEventSynchronize(reused.event), cudaSuccess);
+        }
+        EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 1);
+    }
+#endif
+}
+
+TEST_F(MnnvlCompletionTest, OverlappingContextsNeverShareCompletionEvents) {
+    CUcontext caller = nullptr;
+    ASSERT_EQ(cuCtxGetCurrent(&caller), CUDA_SUCCESS);
+    CUdevice device;
+    ASSERT_EQ(cuDeviceGet(&device, 0), CUDA_SUCCESS);
+    auto create_context = [&](CUcontext& context) {
+#if CUDA_VERSION >= 13000
+        return cuCtxCreate(&context, nullptr, 0, device);
+#else
+        return cuCtxCreate(&context, 0, device);
+#endif
+    };
+    auto destroy_context = [caller](CUcontext context) {
+        EXPECT_EQ(cuCtxDestroy(context), CUDA_SUCCESS);
+        EXPECT_EQ(cuCtxSetCurrent(caller), CUDA_SUCCESS);
+    };
+    CUcontext raw = nullptr;
+    ASSERT_EQ(create_context(raw), CUDA_SUCCESS);
+    std::unique_ptr<CUctx_st, decltype(destroy_context)> context_a(
+        raw, destroy_context);
+    ASSERT_EQ(create_context(raw), CUDA_SUCCESS);
+    std::unique_ptr<CUctx_st, decltype(destroy_context)> context_b(
+        raw, destroy_context);
+    ASSERT_EQ(cuCtxSetCurrent(caller), CUDA_SUCCESS);
+
+    // Keep both contexts alive until all batches AND idle events are released.
+    {
+        MnnvlTransport transport;
+        MnnvlTransportTestPeer::configureLocalCopies(transport, metadata_, true,
+                                                     1);
+        std::shared_ptr<MnnvlCompletionEventPool> pool;
+        struct ContextBatch {
+            MnnvlTransport& transport;
+            CUcontext context;
+            Transport::SubBatchRef batch{nullptr};
+            void* source{nullptr};
+            void* target{nullptr};
+            cudaStream_t stream{nullptr};
+            cudaEvent_t producer{nullptr};
+            Request request;
+            ~ContextBatch() {
+                CUcontext saved = nullptr;
+                (void)cuCtxGetCurrent(&saved);
+                if (cuCtxSetCurrent(context) == CUDA_SUCCESS) {
+                    if (batch) EXPECT_TRUE(transport.freeSubBatch(batch).ok());
+                    if (stream)
+                        EXPECT_EQ(cudaStreamDestroy(stream), cudaSuccess);
+                    if (producer)
+                        EXPECT_EQ(cudaEventDestroy(producer), cudaSuccess);
+                    if (source) EXPECT_EQ(cudaFree(source), cudaSuccess);
+                    if (target) EXPECT_EQ(cudaFree(target), cudaSuccess);
+                }
+                EXPECT_EQ(cuCtxSetCurrent(saved), CUDA_SUCCESS);
+            }
+        } a{transport, context_a.get()}, b{transport, context_b.get()};
+        auto on_context = [](CUcontext context, auto action) {
+            std::thread worker([&] {
+                ASSERT_EQ(cuCtxSetCurrent(context), CUDA_SUCCESS);
+                action();
+                EXPECT_EQ(cuCtxSetCurrent(nullptr), CUDA_SUCCESS);
+            });
+            worker.join();
+        };
+        auto start = [&](ContextBatch& state) {
+            ASSERT_EQ(cudaMalloc(&state.source, kBufferLength), cudaSuccess);
+            ASSERT_EQ(cudaMalloc(&state.target, kBufferLength), cudaSuccess);
+            ASSERT_TRUE(
+                metadata_->segmentManager()
+                    .updateLocal([&](SegmentDesc& segment) {
+                        auto& buffers =
+                            std::get<MemorySegmentDesc>(segment.detail).buffers;
+                        for (void* ptr : {state.source, state.target}) {
+                            BufferDesc buffer;
+                            buffer.addr = reinterpret_cast<uint64_t>(ptr);
+                            buffer.length = kBufferLength;
+                            buffer.location = "cuda:0";
+                            buffer.permission = kLocalReadWrite;
+                            buffers.push_back(buffer);
+                        }
+                        std::sort(buffers.begin(), buffers.end(),
+                                  [](const auto& x, const auto& y) {
+                                      return x.addr < y.addr;
+                                  });
+                        return Status::OK();
+                    })
+                    .ok());
+            ASSERT_EQ(
+                cudaStreamCreateWithFlags(&state.stream, cudaStreamNonBlocking),
+                cudaSuccess);
+            ASSERT_EQ(cudaEventCreateWithFlags(&state.producer,
+                                               cudaEventDisableTiming),
+                      cudaSuccess);
+            ASSERT_TRUE(transport.allocateSubBatch(state.batch, 2).ok());
+            auto* batch = static_cast<MnnvlSubBatch*>(state.batch);
+            // Existing context-owned streams avoid the device-only stream
+            // pool, isolating completion reuse from stream reuse limitations.
+            batch->async_stream = CUDAStreamHandle(state.stream, 0, nullptr);
+            batch->stream_device_id = 0;
+            state.request.opcode = Request::WRITE;
+            state.request.source = state.source;
+            state.request.target_id = LOCAL_SEGMENT_ID;
+            state.request.target_offset =
+                reinterpret_cast<uint64_t>(state.target);
+            state.request.length = kBufferLength;
+            state.request.producer_event = state.producer;
+            ASSERT_EQ(cudaMemsetAsync(state.source, 0x47, kBufferLength,
+                                      state.stream),
+                      cudaSuccess);
+            ASSERT_EQ(cudaEventRecord(state.producer, state.stream),
+                      cudaSuccess);
+            ASSERT_TRUE(
+                transport.submitTransferTasks(state.batch, {state.request})
+                    .ok());
+            ASSERT_EQ(cudaStreamSynchronize(state.stream), cudaSuccess);
+            TransferStatus status;
+            ASSERT_TRUE(
+                transport.getTransferStatus(state.batch, 0, status).ok());
+            EXPECT_EQ(status.s, COMPLETED);
+        };
+        on_context(a.context, [&] { start(a); });
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+        auto* first = static_cast<MnnvlSubBatch*>(a.batch);
+        const auto event_a = first->completion_groups[0]->event;
+        pool = first->completion_groups[0]->pool;
+        on_context(b.context, [&] { start(b); });
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+        on_context(a.context,
+                   [&] { ASSERT_TRUE(transport.freeSubBatch(a.batch).ok()); });
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+        EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 1);
+        on_context(b.context, [&] {
+            ASSERT_TRUE(
+                transport.submitTransferTasks(b.batch, {b.request}).ok());
+            auto* batch = static_cast<MnnvlSubBatch*>(b.batch);
+            EXPECT_NE(batch->completion_groups.back()->event, event_a);
+            EXPECT_EQ(batch->completion_groups.back()->context, b.context);
+            ASSERT_EQ(cudaStreamSynchronize(b.stream), cudaSuccess);
+            TransferStatus status;
+            ASSERT_TRUE(transport.getTransferStatus(b.batch, 1, status).ok());
+            EXPECT_EQ(status.s, COMPLETED);
+            expectPattern(b.target, 0x47);
+            ASSERT_TRUE(transport.freeSubBatch(b.batch).ok());
+        });
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+        // B's two completed events must not expand the per-device capacity.
+        EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 1);
+        MnnvlCompletionEvent reused;
+        on_context(a.context, [&] {
+            ASSERT_TRUE(pool->acquire(0, reused).ok());
+            EXPECT_EQ(reused.event, event_a);
+            ASSERT_EQ(cudaEventRecord(reused.event, a.stream), cudaSuccess);
+            ASSERT_EQ(cudaEventSynchronize(reused.event), cudaSuccess);
+        });
+        ASSERT_FALSE(::testing::Test::HasFatalFailure());
+        // Release from another context without relabeling the owning context.
+        on_context(b.context, [&] {
+            pool->release(0, reused, true);
+            CUcontext current = nullptr;
+            ASSERT_EQ(cuCtxGetCurrent(&current), CUDA_SUCCESS);
+            EXPECT_EQ(current, b.context);
+        });
+    }
+    // Destruction of the idle pool also restores the exact calling context.
+    CUcontext after = nullptr;
+    ASSERT_EQ(cuCtxGetCurrent(&after), CUDA_SUCCESS);
+    EXPECT_EQ(after, caller);
+}
+
+TEST_F(MnnvlCompletionTest, StrictLocalOnlyCopiesUseDefaultEnginePolicy) {
+    // Test real CUDA copies through engine routing without requiring IMEX or
+    // installing a remote FABRIC transport. Cross-node tests remain separate.
+    for (bool legacy : {false, true}) {
+        for (bool gpu_wait : {false, true}) {
+            for (bool pool : {false, true}) {
+                SCOPED_TRACE(::testing::Message()
+                             << "legacy=" << legacy << " gpu_wait=" << gpu_wait
+                             << " pool=" << pool);
+                auto config = makeRegistrationEngineConfig();
+                config->set("use_legacy_transport_selection", legacy);
+                config->set("enable_runtime_queue", false);
+                config->set("merge_requests", false);
+                TransferEngineImpl engine(config);
+                ASSERT_TRUE(engine.available());
+                TransferEngineImplTestPeer::requireFabric(engine);
+                auto metadata = TransferEngineImplTestPeer::metadata(engine);
+                auto fabric = std::make_shared<MnnvlTransport>();
+                MnnvlTransportTestPeer::configureLocalCopies(*fabric, metadata,
+                                                             gpu_wait, 1, pool);
+                engine.swapTransportForTest(MNNVL, fabric);
+                MemoryOptions options;
+                options.type = MNNVL;
+                options.perm = kLocalReadWrite;
+                ASSERT_TRUE(engine
+                                .registerLocalMemory(
+                                    {source_, target_},
+                                    {kBufferLength, kBufferLength}, options)
+                                .ok());
+                auto expect_unexported = [&] {
+                    auto local = metadata->segmentManager().getLocal();
+                    for (auto* address : {source_, target_}) {
+                        auto* buffer = local->findBuffer(
+                            reinterpret_cast<uint64_t>(address), kBufferLength);
+                        ASSERT_NE(buffer, nullptr);
+                        EXPECT_EQ(buffer->permission, kLocalReadWrite);
+                        EXPECT_TRUE(buffer->transports.empty());
+                        EXPECT_TRUE(buffer->mnnvl_handle.empty());
+                    }
+                };
+                expect_unexported();
+                uint8_t pattern = 0x40;
+                for (auto hint : {UNSPEC, MNNVL}) {
+                    for (auto opcode : {Request::READ, Request::WRITE}) {
+                        SCOPED_TRACE(::testing::Message()
+                                     << "hint=" << hint
+                                     << " opcode=" << opcode);
+                        void* input =
+                            opcode == Request::WRITE ? source_ : target_;
+                        void* output =
+                            opcode == Request::WRITE ? target_ : source_;
+                        ASSERT_EQ(
+                            cudaMemsetAsync(input, ++pattern, kBufferLength,
+                                            cudaStreamPerThread),
+                            cudaSuccess);
+                        ASSERT_EQ(cudaMemsetAsync(output, 0, kBufferLength,
+                                                  cudaStreamPerThread),
+                                  cudaSuccess);
+                        auto req = request(opcode);
+                        req.transport_hint = hint;
+                        auto batch = engine.allocateBatch(1);
+                        ASSERT_NE(batch, (BatchID)0);
+                        ASSERT_TRUE(engine.submitTransfer(batch, {req}).ok());
+                        TransferStatus status{PENDING, 0};
+                        const auto deadline = std::chrono::steady_clock::now() +
+                                              std::chrono::seconds(5);
+                        do {
+                            ASSERT_TRUE(
+                                engine.getTransferStatus(batch, 0, status)
+                                    .ok());
+                            if (status.s != PENDING && status.s != INITIAL)
+                                break;
+                            std::this_thread::yield();
+                        } while (std::chrono::steady_clock::now() < deadline);
+                        EXPECT_TRUE(engine.freeBatch(batch).ok());
+                        ASSERT_EQ(status.s, COMPLETED)
+                            << "Engine-routed local MNNVL copy failed or timed "
+                               "out";
+                        EXPECT_EQ(status.transferred_bytes, kBufferLength);
+                        expectPattern(output, pattern);
+                    }
+                }
+                expect_unexported();
+                EXPECT_TRUE(
+                    engine
+                        .unregisterLocalMemory({source_, target_},
+                                               {kBufferLength, kBufferLength})
+                        .ok());
+            }
+        }
+    }
+}
+
+TEST_F(MnnvlCompletionTest, StrictGpuRegistrationPreservesLocalOnlyEndpoints) {
+    BufferDesc buffer;
+    buffer.addr = reinterpret_cast<uint64_t>(source_);
+    buffer.length = kBufferLength;
+    buffer.location = "cuda:0";
+    MemoryOptions options;
+    options.perm = kLocalReadWrite;
+    EXPECT_TRUE(transport_.addMemoryBuffer(buffer, options).ok());
+    EXPECT_TRUE(buffer.mnnvl_handle.empty());
+    EXPECT_TRUE(buffer.transports.empty());
+    options.perm = kGlobalReadWrite;
+    EXPECT_FALSE(transport_.addMemoryBuffer(buffer, options).ok());
+}
+
 #ifdef MNNVL_TEST_CUDA_WRAPPERS
 TEST_F(MnnvlCompletionTest, CopyAndQueryErrorsDrainBeforeTerminalFailure) {
     ASSERT_EQ(
@@ -1260,6 +1861,7 @@ TEST_F(MnnvlCompletionTest, CopyAndQueryErrorsDrainBeforeTerminalFailure) {
     EXPECT_EQ(finish(0).s, FAILED);
     expectPattern(target_, 0x16);
     auto* batch = static_cast<MnnvlSubBatch*>(batch_);
+    EXPECT_FALSE(batch->completion_groups[0]->recorded);
 
     ASSERT_TRUE(
         transport_
@@ -1268,9 +1870,32 @@ TEST_F(MnnvlCompletionTest, CopyAndQueryErrorsDrainBeforeTerminalFailure) {
     fail_completion_query.store(batch->completion_groups[1]->event);
     EXPECT_EQ(finish(1).s, FAILED);
     expectPattern(other_, 0x16);
+    auto pool = batch->completion_groups[1]->pool;
     EXPECT_TRUE(transport_.freeSubBatch(batch_).ok());
+    EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0),
+              0);  // Neither error event was retained.
 }
 #endif
+
+TEST_F(MnnvlCompletionTest, IndependentBatchesShareCompletedEventPool) {
+    ASSERT_EQ(cudaMemset(source_, 0x35, kBufferLength), cudaSuccess);
+    ASSERT_TRUE(transport_.submitTransferTasks(batch_, {request()}).ok());
+    auto* first = static_cast<MnnvlSubBatch*>(batch_);
+    const auto event = first->completion_groups[0]->event;
+    auto pool = first->completion_groups[0]->pool;
+    EXPECT_EQ(finish(0).s, COMPLETED);
+    ASSERT_TRUE(transport_.freeSubBatch(batch_).ok());
+    EXPECT_EQ(MnnvlTransportTestPeer::idle(*pool, 0), 1);
+    ASSERT_TRUE(transport_.allocateSubBatch(batch_, 4).ok());
+    ASSERT_TRUE(
+        transport_
+            .submitTransferTasks(batch_, {request(Request::WRITE, other_)})
+            .ok());
+    auto* next = static_cast<MnnvlSubBatch*>(batch_);
+    EXPECT_EQ(next->completion_groups[0]->event, event);
+    EXPECT_EQ(finish(0).s, COMPLETED);
+    expectPattern(other_, 0x35);
+}
 
 TEST_F(MnnvlCompletionTest, ConcurrentBatchesRemainIndependent) {
     ASSERT_EQ(cudaMemset(source_, 0x53, kBufferLength), cudaSuccess);
@@ -1321,6 +1946,41 @@ TEST_F(MnnvlCompletionTest, MalformedFabricHandlesReturnValidationErrors) {
                         transport_, address, kBufferLength, LOCAL_SEGMENT_ID)
                         .IsInvalidArgument());
     }
+}
+
+TEST_F(MnnvlCompletionTest, StrictOwnedVmmAllocationExportsTrackedExtent) {
+    int supported = 0;
+    if (cuDeviceGetAttribute(&supported,
+                             CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED,
+                             0) != CUDA_SUCCESS ||
+        !supported)
+        GTEST_SKIP() << "No CUDA FABRIC allocation support";
+    MemoryOptions options;
+    options.location = "cuda:0";
+    void* address = nullptr;
+    const auto allocation =
+        transport_.allocateLocalMemory(&address, kBufferLength, options);
+    if (!allocation.ok())
+        GTEST_SKIP() << "FABRIC/IMEX allocation unavailable: "
+                     << allocation.ToString();
+    BufferDesc buffer;
+    buffer.addr = reinterpret_cast<uint64_t>(address);
+    buffer.length = kBufferLength;
+    buffer.location = "cuda:0";
+    buffer.permission = kGlobalReadWrite;
+    const auto registration = transport_.addMemoryBuffer(buffer, options);
+    EXPECT_TRUE(registration.ok()) << registration.ToString();
+    EXPECT_FALSE(buffer.mnnvl_handle.empty());
+    EXPECT_EQ(buffer.addr, reinterpret_cast<uint64_t>(address));
+    EXPECT_EQ(buffer.length, kBufferLength);
+    if (registration.ok() && !buffer.mnnvl_handle.empty() &&
+        buffer.mnnvl_handle.front() == '{') {
+        const auto envelope = json::parse(buffer.mnnvl_handle);
+        EXPECT_GE(envelope.at("mapped_length").get<size_t>(), kBufferLength);
+        EXPECT_EQ(envelope.at("offset").get<uint64_t>(), 0);
+    }
+    EXPECT_TRUE(transport_.removeMemoryBuffer(buffer).ok());
+    EXPECT_TRUE(transport_.freeLocalMemory(address, kBufferLength).ok());
 }
 
 TEST_F(MnnvlCompletionTest,
@@ -1541,16 +2201,16 @@ void expectCrossDeviceDrainKeepsCallerContext(bool custom_context,
     mnnvl_batch->stream_device_id = 0;
     auto stream = mnnvl_batch->async_stream.get();
     auto completion = std::make_unique<MnnvlCompletion>();
-    ASSERT_EQ(
-        cudaEventCreateWithFlags(&completion->event, cudaEventDisableTiming),
-        cudaSuccess);
+    completion->pool = std::make_shared<MnnvlCompletionEventPool>(0);
     completion->device = 0;
+    ASSERT_TRUE(completion->pool->acquire(0, *completion).ok());
     auto event = completion->event;
     mnnvl_batch->completion_groups.push_back(std::move(completion));
     void* buffer = nullptr;
     ASSERT_EQ(cudaMalloc(&buffer, kBufferLength), cudaSuccess);
     ASSERT_EQ(cudaMemsetAsync(buffer, 0, kBufferLength, stream), cudaSuccess);
     ASSERT_EQ(cudaEventRecord(event, stream), cudaSuccess);
+    mnnvl_batch->completion_groups.back()->recorded = true;
 
     CUcontext custom = nullptr;
     if (custom_context) {

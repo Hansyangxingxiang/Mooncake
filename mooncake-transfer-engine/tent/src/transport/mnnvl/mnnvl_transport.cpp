@@ -41,6 +41,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+#include "cuda_memcpy_batch_compat.h"
 #include "tent/common/status.h"
 #include "tent/runtime/slab.h"
 #include "tent/runtime/control_plane.h"
@@ -217,6 +218,43 @@ class MnnvlDeviceGuard {
     cudaError_t error_{cudaSuccess};
 };
 
+// Completion events retain their creation context independently of the
+// releasing thread's current context. Never replace it with a primary context.
+class MnnvlCompletionContextGuard {
+   public:
+    explicit MnnvlCompletionContextGuard(const MnnvlCompletionEvent &event) {
+        if (!event.context) {
+            error_ = CUDA_ERROR_INVALID_CONTEXT;
+            return;
+        }
+        error_ = cuCtxGetCurrent(&saved_);
+        if (error_ != CUDA_SUCCESS) return;
+#if CUDA_VERSION >= 12000
+        unsigned long long id = 0;
+        error_ = cuCtxGetId(event.context, &id);
+        if (error_ != CUDA_SUCCESS) return;
+        if (id != event.context_id) {
+            error_ = CUDA_ERROR_INVALID_CONTEXT;
+            return;
+        }
+#endif
+        if (saved_ == event.context) return;
+        error_ = cuCtxSetCurrent(event.context);
+        restore_ = error_ == CUDA_SUCCESS;
+    }
+    ~MnnvlCompletionContextGuard() {
+        if (restore_ && cuCtxSetCurrent(saved_) != CUDA_SUCCESS)
+            LOG(WARNING) << "MnnvlTransport: unable to restore caller CUDA "
+                            "context after completion event cleanup";
+    }
+    CUresult error() const { return error_; }
+
+   private:
+    CUcontext saved_{nullptr};
+    bool restore_{false};
+    CUresult error_{CUDA_SUCCESS};
+};
+
 /// Thread-local cache of one caller-sync event per device. Events are
 /// created lazily and released at thread exit; the destructor restores the
 /// device around each destroy because event teardown must run on the
@@ -261,12 +299,11 @@ Status drainMnnvlBatch(MnnvlSubBatch *batch) {
 
 /// Waits for producer work already queued on the caller's per-thread stream
 /// so the copy submitted on the transport's internal stream cannot read the
-/// source buffer before that work has executed. CPU-blocking
-/// cudaEventSynchronize mirrors IntraNodeNvlinkTransport and avoids the
-/// expensive cross-device cudaStreamWaitEvent on non-NVIDIA GPUs; it is
-/// complementary to (not a replacement for) the
-/// cudaMemcpySrcAccessOrderStream attribute applied at copy submission.
-Status syncWithCallerStream() {
+/// source buffer before that work has executed. The default CPU wait mirrors
+/// IntraNodeNvlinkTransport; gpu_wait enqueues the dependency on the internal
+/// stream. Neither mode replaces external fencing for application streams.
+Status syncWithCallerStream(cudaStream_t stream, int stream_device,
+                            bool gpu_wait) {
     int device_id = 0;
     CHECK_CUDA(cudaGetDevice(&device_id));
     cudaEvent_t event = tl_caller_sync_events.getOrCreate(device_id);
@@ -275,7 +312,15 @@ Status syncWithCallerStream() {
             "unable to create caller-sync event" LOC_MARK);
     }
     CHECK_CUDA(cudaEventRecord(event, cudaStreamPerThread));
-    CHECK_CUDA(cudaEventSynchronize(event));
+    if (gpu_wait) {
+        MnnvlDeviceGuard device(stream_device);
+        CHECK_CUDA(device.error());
+        // The wait captures this record; a later record on the thread-local
+        // event does not change work already waiting on this stream.
+        CHECK_CUDA(cudaStreamWaitEvent(stream, event, 0));
+    } else {
+        CHECK_CUDA(cudaEventSynchronize(event));
+    }
     return Status::OK();
 }
 
@@ -288,10 +333,107 @@ uint64_t nextRelocateEpoch() {
 
 }  // namespace
 
-MnnvlCompletion::~MnnvlCompletion() {
-    if (!event) return;
+MnnvlCompletionEventPool::~MnnvlCompletionEventPool() {
+    for (auto &[device, events] : idle_) {
+        for (const auto &event : events) {
+            MnnvlCompletionContextGuard guard(event);
+            if (guard.error() == CUDA_SUCCESS)
+                (void)cudaEventDestroy(event.event);
+        }
+    }
+}
+
+Status MnnvlCompletionEventPool::acquire(int device,
+                                         MnnvlCompletionEvent &completion) {
     MnnvlDeviceGuard guard(device);
-    (void)cudaEventDestroy(event);
+    CHECK_CUDA(guard.error());
+    MnnvlCompletionEvent owner;
+    CHECK_CU(cuCtxGetCurrent(&owner.context));
+    if (!owner.context) {
+        CHECK_CUDA(cudaFree(nullptr));
+        CHECK_CU(cuCtxGetCurrent(&owner.context));
+    }
+    if (!owner.context)
+        return Status::InternalError("No current MNNVL completion context");
+#if CUDA_VERSION >= 12000
+    CHECK_CU(cuCtxGetId(owner.context, &owner.context_id));
+#endif
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto &events = idle_[device];
+        for (size_t i = events.size(); i > 0; --i) {
+            if (events[i - 1].context != owner.context ||
+                events[i - 1].context_id != owner.context_id)
+                continue;
+            completion = events[i - 1];
+            events[i - 1] = events.back();
+            events.pop_back();
+            TentMetrics::instance().recordMnnvlEvent(
+                TentMetrics::MnnvlEvent::PoolHit);
+            VLOG(1) << "MnnvlTransport: completion event pool hit device="
+                    << device;
+            return Status::OK();
+        }
+    }
+    CHECK_CUDA(cudaEventCreateWithFlags(&owner.event, cudaEventDisableTiming));
+    completion = owner;
+    TentMetrics::instance().recordMnnvlEvent(TentMetrics::MnnvlEvent::PoolMiss);
+    VLOG(1) << "MnnvlTransport: completion event pool miss device=" << device;
+    return Status::OK();
+}
+
+void MnnvlCompletionEventPool::release(int device,
+                                       const MnnvlCompletionEvent &completion,
+                                       bool completed) {
+    if (!completion.event) return;
+    MnnvlCompletionContextGuard guard(completion);
+    // A destroyed context already invalidated its events. Do not operate on
+    // an event through a new context that happens to reuse the old handle.
+    if (guard.error() != CUDA_SUCCESS) return;
+    if (completed && capacity_ != 0) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto &events = idle_[device];
+#if CUDA_VERSION >= 12000
+        // Contexts can die after returning events (or while another context
+        // has events in flight). Reclaim stale slots only under capacity
+        // pressure, without switching contexts or touching invalid events.
+        if (events.size() >= capacity_) {
+            events.erase(
+                std::remove_if(
+                    events.begin(), events.end(),
+                    [](const MnnvlCompletionEvent &event) {
+                        unsigned long long id = 0;
+                        const auto error = cuCtxGetId(event.context, &id);
+                        // Other errors do not establish that the owner died.
+                        return error == CUDA_ERROR_INVALID_CONTEXT ||
+                               error == CUDA_ERROR_CONTEXT_IS_DESTROYED ||
+                               (error == CUDA_SUCCESS &&
+                                id != event.context_id);
+                    }),
+                events.end());
+        }
+#endif
+        if (events.size() < capacity_) {
+            events.push_back(completion);
+            return;
+        }
+    }
+    (void)cudaEventDestroy(completion.event);
+}
+
+MnnvlCompletion::~MnnvlCompletion() {
+    // Default construction leaves both event and pool empty. Construction
+    // paths assign pool before acquiring or adopting an event, so a non-null
+    // event implies a non-null pool kept alive by shared ownership below.
+    if (!event) return;
+    MnnvlCompletionContextGuard guard(*this);
+    // Only completed, error-free records can enter the idle pool. Pending
+    // events and events that failed recording are never recycled.
+    const bool completed =
+        guard.error() == CUDA_SUCCESS && recorded &&
+        (result == cudaSuccess || result == cudaErrorNotReady) &&
+        cudaEventQuery(event) == cudaSuccess;
+    pool->release(device, *this, completed);
 }
 
 MnnvlSubBatch::~MnnvlSubBatch() {
@@ -323,6 +465,10 @@ Status MnnvlTransport::install(std::string &local_segment_name,
     }
 
     if (!conf) conf = std::make_shared<Config>();
+    CHECK_STATUS(parseMnnvlConfig(*conf, options_));
+    completion_pool_ = std::make_shared<MnnvlCompletionEventPool>(
+        options_.completion_event_pool ? options_.completion_event_pool_capacity
+                                       : 0);
     if (!supportFabricMem()) {
         return Status::InvalidArgument(
             "CUDA Fabric handle type not supported " LOC_MARK);
@@ -354,7 +500,7 @@ Status MnnvlTransport::install(std::string &local_segment_name,
     else
         handle_type_ = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
     host_register_ = conf_->get("transports/nvlink/host_register", true);
-    egm_enabled_ = conf_->get("transports/mnnvl/egm", false);
+    egm_enabled_ = options_.egm_enabled;
     egm_strict_ = conf_->get("transports/mnnvl/egm_strict", false);
     if (egm_enabled_) {
         // Host buffers allocated through allocateLocalMemory() (or any
@@ -394,8 +540,11 @@ Status MnnvlTransport::install(std::string &local_segment_name,
             CHECK_STATUS(released);
         }
     }
-#if CUDART_VERSION >= 12080
+#if CUDART_VERSION >= 13000
     const char *copy_api = "cudaMemcpyBatchAsync";
+#elif CUDART_VERSION >= 12080
+    const char *copy_api =
+        loadCudaMemcpyBatchAsync() ? "cudaMemcpyBatchAsync" : "cudaMemcpyAsync";
 #else
     const char *copy_api = "cudaMemcpyAsync";
 #endif
@@ -403,6 +552,13 @@ Status MnnvlTransport::install(std::string &local_segment_name,
               << " handle_type="
               << (handle_type_ == CU_MEM_HANDLE_TYPE_FABRIC ? "fabric"
                                                             : "posix_fd")
+              << " require_fabric=" << options_.require_fabric
+              << " completion_event_pool=" << options_.completion_event_pool
+              << " pool_capacity="
+              << (options_.completion_event_pool
+                      ? options_.completion_event_pool_capacity
+                      : 0)
+              << " sync_mode=" << (options_.gpu_wait ? "gpu_wait" : "cpu_block")
               << " egm=" << egm_enabled_ << " copy_api=" << copy_api
               << " cuda_runtime=" << CUDART_VERSION;
     return Status::OK();
@@ -465,6 +621,7 @@ Status MnnvlTransport::allocateSubBatch(SubBatchRef &batch, size_t max_size) {
     batch = mnnvl_batch;
     mnnvl_batch->task_list.reserve(max_size);
     mnnvl_batch->max_size = max_size;
+    mnnvl_batch->shared_polling = options_.completion_event_pool;
     {
         std::lock_guard<std::mutex> lock(batch_mutex_);
         active_batches_.insert(mnnvl_batch);
@@ -481,9 +638,9 @@ Status MnnvlTransport::freeSubBatch(SubBatchRef &batch) {
     std::lock_guard<std::mutex> lock(batch_mutex_);
     CHECK_STATUS(drainMnnvlBatch(mnnvl_batch));
     active_batches_.erase(mnnvl_batch);
-    // Completion events are destroyed by ~MnnvlSubBatch(), which Slab's
-    // deallocate() invokes before returning the storage. Streams are
-    // pool-managed and not destroyed here.
+    // Completion leases are released by ~MnnvlSubBatch(), which Slab's
+    // deallocate() invokes before returning the storage. Completed events
+    // may return to their pool; streams are also pool-managed.
     Slab<MnnvlSubBatch>::Get().deallocate(mnnvl_batch);
     batch = nullptr;
     return Status::OK();
@@ -500,7 +657,7 @@ Status MnnvlTransport::submitTransferTasks(
         mnnvl_batch->max_size - mnnvl_batch->task_list.size())
         return Status::TooManyRequests("Exceed batch capacity" LOC_MARK);
     if (request_list.empty()) return Status::OK();
-    if (!metadata_ || !platform_)
+    if (!metadata_ || !platform_ || !completion_pool_)
         return Status::InvalidArgument("MNNVL is not installed" LOC_MARK);
 
     // Get local segment for buffer lookup
@@ -579,16 +736,13 @@ Status MnnvlTransport::submitTransferTasks(
                               ? mnnvl_batch->async_stream.get()
                               : new_stream.get();
     auto completion = std::make_unique<MnnvlCompletion>();
+    completion->pool = completion_pool_;
     completion->device = stream_device;
-    {
-        MnnvlDeviceGuard guard(stream_device);
-        CHECK_CUDA(guard.error());
-        CHECK_CUDA(cudaEventCreateWithFlags(&completion->event,
-                                            cudaEventDisableTiming));
-    }
+    CHECK_STATUS(completion_pool_->acquire(stream_device, *completion));
 
     // Reserve all bookkeeping before enqueueing any copy. Record on the
-    // original caller device.
+    // original caller device; syncWithCallerStream restores it after a
+    // cross-device wait.
     std::vector<MnnvlTask *> new_tasks;
     new_tasks.reserve(validated.size());
     std::vector<void *> srcs, dsts;
@@ -605,7 +759,16 @@ Status MnnvlTransport::submitTransferTasks(
     }
     mnnvl_batch->completion_groups.reserve(
         mnnvl_batch->completion_groups.size() + 1);
-    CHECK_STATUS(syncWithCallerStream());
+    // Requests carrying a producer_event are ordered on the device by
+    // startTransfer, so the caller-stream sync is skipped when every request
+    // has one.
+    const bool need_caller_sync = std::any_of(
+        request_list.begin(), request_list.end(), [](const Request &request) {
+            return request.producer_event == nullptr;
+        });
+    if (need_caller_sync)
+        CHECK_STATUS(
+            syncWithCallerStream(stream, stream_device, options_.gpu_wait));
     MnnvlDeviceGuard guard(stream_device);
     CHECK_CUDA(guard.error());
 
@@ -639,7 +802,9 @@ Status MnnvlTransport::submitTransferTasks(
                 << " local=" << local
                 << " remote=" << request_list.size() - local << " handle_type="
                 << (handle_type_ == CU_MEM_HANDLE_TYPE_FABRIC ? "fabric"
-                                                              : "posix_fd");
+                                                              : "posix_fd")
+                << " sync_mode="
+                << (options_.gpu_wait ? "gpu_wait" : "cpu_block");
     }
     startTransfer(new_tasks, srcs, dsts, sizes, mnnvl_batch,
                   *mnnvl_batch->completion_groups.back());
@@ -653,6 +818,31 @@ void MnnvlTransport::startTransfer(std::vector<MnnvlTask *> &tasks,
                                    MnnvlSubBatch *batch,
                                    MnnvlCompletion &completion) {
     if (tasks.empty()) return;
+    cudaStream_t stream = batch->async_stream.get();
+
+    // Order the copies after each distinct producer event on the device, so
+    // a producer on any application stream is covered without blocking the
+    // CPU. No copy is queued yet, so a failure here needs no drain.
+    std::vector<cudaEvent_t> waited_events;
+    for (auto *task : tasks) {
+        auto producer =
+            reinterpret_cast<cudaEvent_t>(task->request.producer_event);
+        if (!producer || std::find(waited_events.begin(), waited_events.end(),
+                                   producer) != waited_events.end())
+            continue;
+        auto wait_err = cudaStreamWaitEvent(stream, producer, 0);
+        if (wait_err != cudaSuccess) {
+            LOG(ERROR) << "MNNVL producer event wait failed: "
+                       << cudaGetErrorString(wait_err) << "; batch=" << batch
+                       << " group=" << tasks.front()->completion_group
+                       << " device=" << completion.device;
+            completion.result = wait_err;
+            for (auto *t : tasks) t->status_word = TransferStatusEnum::FAILED;
+            return;
+        }
+        waited_events.push_back(producer);
+    }
+
     cudaError_t err;
 
 #if CUDART_VERSION >= 13000
@@ -662,15 +852,15 @@ void MnnvlTransport::startTransfer(std::vector<MnnvlTask *> &tasks,
     err = cudaMemcpyBatchAsync(const_cast<const void **>(dsts.data()),
                                const_cast<const void **>(srcs.data()),
                                sizes.data(), srcs.size(), &attr, &attrs_idx, 1,
-                               batch->async_stream.get());
+                               stream);
 #elif CUDART_VERSION >= 12080
     cudaMemcpyAttributes attr{};
     attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
     size_t attrs_idx = 0;
     size_t fail_idx = tasks.size();
-    err = cudaMemcpyBatchAsync(dsts.data(), srcs.data(), sizes.data(),
-                               srcs.size(), &attr, &attrs_idx, 1, &fail_idx,
-                               batch->async_stream.get());
+    err = cudaMemcpyBatchAsyncCompat(dsts.data(), srcs.data(), sizes.data(),
+                                     srcs.size(), &attr, &attrs_idx, 1,
+                                     &fail_idx, stream);
     if (err != cudaSuccess && fail_idx < tasks.size()) {
         LOG(ERROR) << "MnnvlTransport::startTransfer internal error: "
                    << "cudaMemcpyBatchAsync failed at task index " << fail_idx
@@ -681,9 +871,8 @@ void MnnvlTransport::startTransfer(std::vector<MnnvlTask *> &tasks,
 #else
     err = cudaSuccess;
     for (size_t i = 0; i < tasks.size(); ++i) {
-        auto single_err =
-            cudaMemcpyAsync(dsts[i], srcs[i], sizes[i], cudaMemcpyDefault,
-                            batch->async_stream.get());
+        auto single_err = cudaMemcpyAsync(dsts[i], srcs[i], sizes[i],
+                                          cudaMemcpyDefault, stream);
         if (single_err != cudaSuccess) {
             err = single_err;
             break;
@@ -691,14 +880,16 @@ void MnnvlTransport::startTransfer(std::vector<MnnvlTask *> &tasks,
     }
 #endif
 
-    if (err == cudaSuccess)
-        err = cudaEventRecord(completion.event, batch->async_stream.get());
+    if (err == cudaSuccess) {
+        err = cudaEventRecord(completion.event, stream);
+        completion.recorded = err == cudaSuccess;
+    }
     if (err != cudaSuccess) {
         // Batch memcpy may have accepted a prefix. Drain before terminal
         // failure allows runtime teardown or recovery to reuse these buffers.
         // Submission remains successful: returning an error here would invite
         // redispatch.
-        const auto drain = cudaStreamSynchronize(batch->async_stream.get());
+        const auto drain = cudaStreamSynchronize(stream);
         LOG(ERROR) << "MNNVL copy/completion failed: "
                    << cudaGetErrorString(err)
                    << "; drain: " << cudaGetErrorString(drain)
@@ -723,8 +914,12 @@ Status MnnvlTransport::getTransferStatus(SubBatchRef batch, int task_id,
     if (task.status_word == TransferStatusEnum::PENDING) {
         auto &completion =
             *mnnvl_batch->completion_groups[task.completion_group];
-        if (completion.result == cudaErrorNotReady) {
+        if (completion.result == cudaErrorNotReady &&
+            (!mnnvl_batch->shared_polling || completion.last_polled_task < 0 ||
+             task_id <= completion.last_polled_task)) {
             MnnvlDeviceGuard guard(completion.device);
+            TentMetrics::instance().recordMnnvlEvent(
+                TentMetrics::MnnvlEvent::CompletionQuery);
             // Once copies are accepted, return terminal task status even if the
             // CUDA context fails; a poll error would invite redispatch.
             completion.result = guard.error() == cudaSuccess
@@ -749,6 +944,7 @@ Status MnnvlTransport::getTransferStatus(SubBatchRef batch, int task_id,
                         << " result=" << cudaGetErrorString(completion.result);
             }
         }
+        completion.last_polled_task = task_id;
         if (completion.result == cudaSuccess) {
             task.transferred_bytes = task.request.length;
             task.status_word = TransferStatusEnum::COMPLETED;
@@ -872,6 +1068,12 @@ Status MnnvlTransport::addMemoryBuffer(BufferDesc &desc,
                     "MnnvlTransport: strict EGM registration of a host "
                     "buffer that is not an exportable EGM allocation" LOC_MARK);
             }
+            if (options_.require_fabric && egm_enabled_) {
+                TentMetrics::instance().recordMnnvlEvent(
+                    TentMetrics::MnnvlEvent::StrictFailure);
+                return Status::InvalidArgument(
+                    "Strict MNNVL requires an exportable EGM allocation");
+            }
             // Plain host memory: usable as the local side of a transfer
             // (dram_to_gpu) but not addressable by peers.
             return pin_host();
@@ -881,12 +1083,29 @@ Status MnnvlTransport::addMemoryBuffer(BufferDesc &desc,
             return Status::InvalidArgument(
                 "MNNVL remote registration requires exportable VMM "
                 "memory" LOC_MARK);
+        if (options_.require_fabric) {
+            TentMetrics::instance().recordMnnvlEvent(
+                TentMetrics::MnnvlEvent::StrictFailure);
+            return Status::InvalidArgument(
+                "Strict MNNVL requires fabric-exportable GPU memory; use "
+                "local-only registration for local endpoints");
+        }
         LOG(INFO) << "Memory region " << (void *)desc.addr
                   << "  will not be registered for MNNVL transport.";
         return Status::OK();
     }
 
     RetainedAllocation retained{handle};
+    if (options_.require_fabric) {
+        CUmemAllocationProp prop = {};
+        CHECK_CU(cuMemGetAllocationPropertiesFromHandle(&prop, handle));
+        if (!(prop.requestedHandleTypes & CU_MEM_HANDLE_TYPE_FABRIC)) {
+            TentMetrics::instance().recordMnnvlEvent(
+                TentMetrics::MnnvlEvent::StrictFailure);
+            return Status::InvalidArgument(
+                "Strict MNNVL allocation has no FABRIC handle type");
+        }
+    }
     // cuMemGetAddressRange need not support VMM mappings (a HOST_NUMA mapping
     // can report base 0). Allocations created here have an authoritative
     // mapped extent, including granularity rounding, even for subranges.
@@ -897,6 +1116,12 @@ Status MnnvlTransport::addMemoryBuffer(BufferDesc &desc,
         result = cuMemGetAddressRange(&real_base, &real_size,
                                       (CUdeviceptr)desc.addr);
     if (result != CUDA_SUCCESS || real_base == 0 || real_size == 0) {
+        if (options_.require_fabric) {
+            TentMetrics::instance().recordMnnvlEvent(
+                TentMetrics::MnnvlEvent::StrictFailure);
+            return Status::InternalError(
+                "Strict MNNVL cannot determine export allocation extent");
+        }
         if (egm_strict_ && options.type == MNNVL)
             return Status::InvalidArgument(
                 std::string(
@@ -937,6 +1162,9 @@ Status MnnvlTransport::addMemoryBuffer(BufferDesc &desc,
     }
     // retained releases the allocation reference on every return path.
     if (result != CUDA_SUCCESS) {
+        if (options_.require_fabric)
+            TentMetrics::instance().recordMnnvlEvent(
+                TentMetrics::MnnvlEvent::StrictFailure);
         return Status::InternalError(
             std::string("cuMemExportToShareableHandle: cuResult ") +
             std::to_string(result) + LOC_MARK);
@@ -1075,6 +1303,12 @@ Status MnnvlTransport::allocateLocalMemory(void **addr, size_t size,
                             "node ") +
                 std::to_string(numa_node) + ": cuResult " +
                 std::to_string(result) + LOC_MARK);
+        if (options_.require_fabric) {
+            TentMetrics::instance().recordMnnvlEvent(
+                TentMetrics::MnnvlEvent::StrictFailure);
+            return Status::InternalError("Strict MNNVL cuMemCreate failed: " +
+                                         std::to_string(result));
+        }
         TentMetrics::instance().recordMnnvlEvent(
             TentMetrics::MnnvlEvent::FabricFallback);
         LOG(WARNING) << "Fallback to "
@@ -1414,6 +1648,12 @@ Status MnnvlTransport::relocateSharedMemoryAddress(uint64_t &dest_addr,
             if (!buffer || buffer->mnnvl_handle.empty())
                 return Status::NeedsRefreshCache(
                     "Requested address is not in registered buffer" LOC_MARK);
+            if (options_.require_fabric &&
+                (buffer->permission == kLocalReadWrite ||
+                 std::find(buffer->transports.begin(), buffer->transports.end(),
+                           MNNVL) == buffer->transports.end()))
+                return Status::InvalidArgument(
+                    "Peer buffer has no accessible MNNVL fabric export");
             return Status::OK();
         }));
 
