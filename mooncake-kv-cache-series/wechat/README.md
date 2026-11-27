@@ -8,16 +8,16 @@
 
 | 篇次 | 文章 | 对应源码解析版 |
 |---|---|---|
-| 1 | [两台推理实例，怎么复用同一段 KV Cache？](01-shared-kv-cache.md) | [篇0：架构总览](../00-architecture-overview.md) |
+| 1 | [同样的 1,024 个前缀 token，第二台推理实例还要再算一遍吗？](01-shared-kv-cache.md) | [篇0：架构总览](../00-architecture-overview.md) |
 | 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) | [篇4：核心数据结构](../04-core-data-structures.md) |
 | 3 | [字节已经写完，为什么另一个 Client 还读不到？](03-put-visibility.md) | [篇2：Put 路径](../02-put-path.md) |
 | 4 | [字节读回来了，这次 Get 为什么还可能失败？](04-get-and-lease.md) | [篇3：Get 路径](../03-get-path.md) |
-| 5 | [K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
+| 5 | [Mooncake 里 key 明明存在，为什么还是读不到副本？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
 | 6 | [Transfer Engine 返回成功，数据就传完了吗？](06-transfer-lifecycle.md) | [篇5：TE 生命周期](../05-transfer-engine-task-lifecycle.md) |
 | 7 | [一次 RDMA 传输，究竟经历了什么？](07-rdma-data-path.md) | [篇6：RDMA 数据路径](../06-rdma-data-path.md) |
-| 8 | [源内存在 NUMA 0，两张网卡分属两个 NUMA：这次 RDMA 走哪张？](08-multi-nic-numa.md) | [篇7：多网卡与 NUMA](../07-multi-nic-numa.md) |
+| 8 | [双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？](08-multi-nic-numa.md) | [篇7：多网卡与 NUMA](../07-multi-nic-numa.md) |
 | 9 | [缓存满了，K 刚被读到，淘汰线程为什么删不掉它？](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
-| 10 | [文件与本地索引都好了，通知 Master 失败会怎样？](10-ssd-tiering.md) | [篇9：SSD 分层](../09-ssd-tiering.md) |
+| 10 | [KV Cache 已经写进 SSD，为什么其他节点还可能读不到？](10-ssd-tiering.md) | [篇9：SSD 分层](../09-ssd-tiering.md) |
 | 11 | [共享了 KV Cache，为什么推理不一定更快？](11-kv-reuse-and-inference.md) | [篇10：vLLM 集成](../10-vllm-integration.md) |
 
 ## 公众号排版

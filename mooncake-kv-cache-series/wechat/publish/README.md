@@ -8,16 +8,16 @@
 
 | 篇次 | 文章 | 状态 | Markdown | HTML | 配图 |
 |---|---|---|---|---|---|
-| 1 | 第1篇｜两台推理实例，怎么复用同一段 KV Cache？ | 已生成 | [MD](./01-shared-kv-cache.md) | [HTML](./01-shared-kv-cache.html) | 1 |
+| 1 | 第1篇｜同样的 1,024 个前缀 token，第二台推理实例还要再算一遍吗？ | 已生成 | [MD](./01-shared-kv-cache.md) | [HTML](./01-shared-kv-cache.html) | 1 |
 | 2 | 第2篇｜一个 KV Cache 对象，在 Mooncake 里到底怎么放？ | 已生成 | [MD](./02-objects-and-replicas.md) | [HTML](./02-objects-and-replicas.html) | 2 |
 | 3 | 第3篇｜字节已经写完，为什么另一个 Client 还读不到？ | 已生成 | [MD](./03-put-visibility.md) | [HTML](./03-put-visibility.html) | 1 |
 | 4 | 第4篇｜字节读回来了，这次 Get 为什么还可能失败？ | 已生成 | [MD](./04-get-and-lease.md) | [HTML](./04-get-and-lease.html) | 1 |
-| 5 | 第5篇｜K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？ | 已生成 | [MD](./05-source-reading.md) | [HTML](./05-source-reading.html) | 0 |
+| 5 | 第5篇｜Mooncake 里 key 明明存在，为什么还是读不到副本？ | 已生成 | [MD](./05-source-reading.md) | [HTML](./05-source-reading.html) | 0 |
 | 6 | 第6篇｜Transfer Engine 返回成功，数据就传完了吗？ | 已生成 | [MD](./06-transfer-lifecycle.md) | [HTML](./06-transfer-lifecycle.html) | 1 |
 | 7 | 第7篇｜一次 RDMA 传输，究竟经历了什么？ | 已生成 | [MD](./07-rdma-data-path.md) | [HTML](./07-rdma-data-path.html) | 2 |
-| 8 | 第8篇｜源内存在 NUMA 0，两张网卡分属两个 NUMA：这次 RDMA 走哪张？ | 已生成 | [MD](./08-multi-nic-numa.md) | [HTML](./08-multi-nic-numa.html) | 1 |
+| 8 | 第8篇｜双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？ | 已生成 | [MD](./08-multi-nic-numa.md) | [HTML](./08-multi-nic-numa.html) | 1 |
 | 9 | 第9篇｜缓存满了，K 刚被读到，淘汰线程为什么删不掉它？ | 已生成 | [MD](./09-cache-eviction.md) | [HTML](./09-cache-eviction.html) | 1 |
-| 10 | 第10篇｜文件与本地索引都好了，通知 Master 失败会怎样？ | 已生成 | [MD](./10-ssd-tiering.md) | [HTML](./10-ssd-tiering.html) | 2 |
+| 10 | 第10篇｜KV Cache 已经写进 SSD，为什么其他节点还可能读不到？ | 已生成 | [MD](./10-ssd-tiering.md) | [HTML](./10-ssd-tiering.html) | 2 |
 | 11 | 第11篇｜共享了 KV Cache，为什么推理不一定更快？ | 已生成 | [MD](./11-kv-reuse-and-inference.md) | [HTML](./11-kv-reuse-and-inference.html) | 2 |
 
 “已生成”表示本次构建写出了对应产物并通过脚本校验；阅读效果以实际浏览器检查为准。

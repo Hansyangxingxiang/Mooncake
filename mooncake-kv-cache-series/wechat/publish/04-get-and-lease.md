@@ -99,9 +99,13 @@ lease 到期只代表**保护窗口结束**，不代表对象立刻被删除。�
 
 错误分类越准确，越容易判断问题发生在查询、选择、搬运还是完成检查阶段。这次 Get 返回错误后，是否重试这次读取、换一个副本，还是让推理请求重算前缀，由调用方或推理框架决定；`Client::Get` 只把对应阶段的错误交回去。
 
-B 已经知道 R1 可读，也读回了字节。下一次追踪这条路径时，从哪里开始看？
+## 总结
 
-**源码延伸：**原系列篇3；`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。版本基线为 `v0.3.13.post1`。
+经 `Client::Get` 的读取，接受结果的条件是：传输成功、可选 checksum 通过、lease 未过期。字节到达本地 buffer 只是第一个条件；`LEASE_EXPIRED` 表示这次结果不再受读保护，不等于数据损坏，也不等于 R1 空间已经回收。
+
+`LOCAL_DISK` 全量 offload 分支是明确例外：它走 `batch_get_into_offload_object_internal`，之后只做 checksum，不经过同一处 lease 检查。因此，这条结论不能外推到所有磁盘读取。
+
+**源码延伸：**原系列篇3；`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。
 
 - [Client::Get](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1352) · [IsLeaseExpired](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/client_service.h#L60)
 - [Client::Query（lease 起点）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)

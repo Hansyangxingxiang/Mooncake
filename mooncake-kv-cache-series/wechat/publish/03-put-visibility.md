@@ -135,7 +135,11 @@ B 此时查询 K，能拿到 R1 的描述。A 看到的"重试成功"表示"对�
 
 `PutRevoke` 本身也有限制：它只撤销仍处于 `PROCESSING` 的目标副本。如果目标类别里已经有非 `PROCESSING` 的副本（例如 `COMPLETE`），Master 返回 `INVALID_WRITE`，而不是误删已完成的数据。这正好要求调用方"提交成功的那一类，撤销失败的那一类"。
 
-字节已经写完，B 也终于从 R1 读回了数据。但读回来的字节，这次 Get 为什么还可能失败？
+## 总结
+
+对普通新对象 Put，写方的提交时刻是 `PutEnd`：在此之前，字节即使已经传到 R1，副本仍是 `PROCESSING`，`GetReplicaList` 不会返回它；`PutEnd` 成功后，R1 变成 `COMPLETE`，读方才可能拿到副本描述。
+
+同 key 再次 Put 是另一条路径。只要已有 `COMPLETE` 副本或仍在 discard 窗口内，`PutStart` 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 直接当成功返回，本次 buffer 不写入。看到"Put 成功"，要区分它表示"首次提交成功"还是"对象已存在"。
 
 **源码延伸：**原系列篇2；`Client::Put`、`PutStart`、`PutEnd`、`PutRevoke`、`GetReplicaList`、`IsReplicaReadable`。版本基线为 `v0.3.13.post1`。
 

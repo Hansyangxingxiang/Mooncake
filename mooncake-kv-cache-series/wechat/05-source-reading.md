@@ -1,12 +1,12 @@
-# 第5篇｜K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？
+# 第5篇｜Mooncake 里 key 明明存在，为什么还是读不到副本？
 
-**摘要：**同一个错误码可能来自不同分支。沿着 B 的一次查询走四站，看每一站能排除什么、下一步该查什么。
+**摘要：**B 查询 key `K` 却收到 `REPLICA_IS_NOT_READY`。同一个错误码可能来自不同分支；沿查询走四站，看每一站能排除什么、下一步该查什么。
 
 实例 B 查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
 
 这个错误容易被直接理解成"对象不存在"或"再等等就好"。但同一个返回码背后，可能是副本还在 `PROCESSING`，也可能是句柄或传输端点失效。只看一行错误日志，分不出是哪一种。
 
-本篇不重复第3篇对 Put 可见性的系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
+第3篇已经讲过写入可见性：`PutStart` 之后、`PutEnd` 之前，副本停在 `PROCESSING`。这里不重复那套系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
 
 ## 第一站：Client::Query 只把查询交给 Master
 
@@ -56,27 +56,32 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 
 ## 用测试确认 PROCESSING 这一种情况
 
-[`master_service_test.cpp`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4069) 里有一个用例覆盖了这条分支：`PutStart` 返回的副本状态是 `PROCESSING`；在调用 `PutEnd` 之前，`GetReplicaList` 返回 `REPLICA_IS_NOT_READY`；`PutEnd` 之后，测试继续执行成功的读取。
+基线 `v0.3.13.post1` 的 [`master_service_test.cpp`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4041) 中，`SingleSliceMultiReplicaFlow` 用例把这条路径固定下来：
 
-这个用例把状态固定在"分配完成、提交之前"，断言正好落在第三站和第四站之间。它证明的是这一种 `PROCESSING` 场景，不是所有 `REPLICA_IS_NOT_READY` 的来源。阅读用例时先确认它的 setup 和断言，再判断它能否解释手上的现象。
+| 操作 | 测试实际调用 | 直接观察到的结果 |
+|---|---|---|
+| 申请 | `PutStart` | 3 个副本，均为 `PROCESSING` |
+| 提交前查询 | `GetReplicaList` | 返回 `REPLICA_IS_NOT_READY` |
+| 提交 | `PutEnd(MEMORY)` | 返回成功 |
+| 提交后查询 | `GetReplicaList` | 3 个副本，均为 `COMPLETE` |
 
-## 定位时先收集三样证据
+四行里，测试直接断言的是副本状态、`PutStart` 返回的 slice 长度、查询错误码和提交后的副本列表。它没有执行字节传输，也没有验证读回的数据内容。因此，它证明的是"分配完成、`PutEnd` 之前查不到可读副本"这一种 `PROCESSING` 来源；句柄失效、传输端点失效等分支仍要靠第三站的条件和运行证据判断。
 
-遇到 `REPLICA_IS_NOT_READY`，只凭错误码无法继续细分。下一步至少要拿到：
+## 总结
 
-1. K 的元数据是否存在；
-2. 各副本的状态是 `PROCESSING`、`COMPLETE` 还是 `REMOVED`；
-3. 副本的内存/NoF 句柄和传输端点是否有效。
+遇到 `REPLICA_IS_NOT_READY`，按这个顺序查：
 
-这三样分别对应第二站、第三站和第四站。只有第一样是"存在"，后两样仍可能让副本不可读。
+1. 先确认 K 的 `ObjectMetadata` 是否存在——存在，才轮得到副本状态；
+2. 再看各副本是 `PROCESSING`、`COMPLETE` 还是 `REMOVED`，以及是否存在通过 `IsReplicaReadable` 的副本；
+3. 最后核对内存/NoF 句柄与传输端点是否有效。
 
-下一篇进入传输层。提交一个传输任务之后，调用方还要回答另一个问题：什么时候才能安全释放 batch 和 buffer？
+这三步分别对应第二站、第三站和第四站。测试只覆盖 `PROCESSING` 这一种来源；句柄失效、传输端点失效等分支需要对应的运行证据，不能只凭错误码判断。
 
-**源码延伸：**原系列篇1；`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。版本基线为 `v0.3.13.post1`。
+**源码延伸：**原系列篇1；`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。
 
 - [Client::Query](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)
 - [MasterService::GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
-- [PROCESSING 副本的测试用例](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4069)
+- [PROCESSING 副本的测试用例](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4041)
 
 [源码解析版](../01-source-navigation.md) · [系列目录与排版说明](README.md)
 

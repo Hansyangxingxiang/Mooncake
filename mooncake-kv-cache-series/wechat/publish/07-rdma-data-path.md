@@ -70,7 +70,11 @@ RDMA 可以减少传统网络栈中的部分 CPU 搬运，但应用是否存在 
 
 讨论这条 WRITE 路径的性能时，应说明省掉的是哪一次拷贝，而不是把"用了 RDMA"当成全路径没有拷贝的证明。
 
-下一篇讨论另一组影响传输效率的条件：多网卡与 NUMA 拓扑。
+## 总结
+
+这条 WRITE 路径上，软件只做两件事：本地 TE 把 slice 构造成 WR 并 `ibv_post_send`；本地 worker 从 CQ 回收 CQE，把完成映射回 slice 和 task。对象字节由 RNIC 经 RDMA WRITE 直接写入 R1 的远端已注册内存。
+
+CQE 成功只证明本地完成，不证明 Store 可见；要让读方查到副本，还需要 `PutEnd` 把状态翻成 `COMPLETE`。RDMA 省掉的是传统网络栈中的部分 CPU 搬运，"零拷贝"不能外推为整条 GPU 或应用路径都没有拷贝。
 
 **源码延伸：**原系列篇6；RDMA transport、endpoint、worker pool、WR/CQE 处理。版本基线为 `v0.3.13.post1`。
 
