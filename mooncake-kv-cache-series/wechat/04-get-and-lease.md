@@ -1,4 +1,4 @@
-# 第4篇｜Mooncake 里 KV Cache 字节读回来了，这次 Get 为什么还可能失败？
+# KV 已经读回本地，这次 Get 为什么还会返回 LEASE_EXPIRED？
 
 **摘要：**推理实例 B 从 R1 读回了字节，这次 Get 仍可能失败。定位、搬完、可接受，是三个不同时刻。
 
@@ -23,20 +23,20 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 *配图1：一次跨过 lease 到期的读取时间线。*
 
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 20, "rankSpacing": 20}}}%%
+%%{init: {"flowchart": {"nodeSpacing": 12, "rankSpacing": 18}}}%%
 flowchart TB
-    T0["t = 0<br/>取本地起点，发出查询"]
-    T1["t = 10ms<br/>收到描述；<br/>截止 = 起点 + 200ms"]
-    T2["t = 150ms<br/>开始从 R1 搬运"]
-    T3["t = 200ms<br/>lease 到期"]
-    T4["t = 260ms<br/>字节到达本地 buffer"]
-    T5["t = 260ms<br/>检查 lease：已过期"]
-    T0 --> T1 --> T2 --> T3 --> T4 --> T5
-    style T3 stroke:#D46B08,stroke-width:2px,stroke-dasharray:6 3
-    style T5 stroke:#D46B08,stroke-width:2px
+    T0["t = 0<br/>查询前记录本地起点<br/>发出查询"]
+    T1["t = 10 ms<br/>收到 R1 描述与 TTL<br/>（示例 200 ms）<br/>截止 = 本地起点 + TTL"]
+    T2["t = 200 ms<br/>保护窗口到期<br/>（示例 TTL）"]
+    T3["t = 260 ms<br/>字节到达本地 buffer<br/>随后客户端检查<br/>→ LEASE_EXPIRED"]
+
+    T0 --> T1 --> T2 --> T3
+
+    style T2 stroke:#D46B08,stroke-width:3px,stroke-dasharray:7 4,font-weight:bold
+    style T3 stroke:#C2410C,stroke-width:4px,font-weight:bold,fill:#FFF4EC
 ```
 
-*图注：B 在查询前取本地起点，截止 = 起点 + TTL。搬运跨过截止点后，字节仍可能到达，但事后检查返回 `LEASE_EXPIRED`。橙色虚线框标出到期点；`LOCAL_DISK` offload 例外见正文。*
+*图注：橙色虚线框是 200 ms 到期点，最后一项是 260 ms 的完成点；字节到达在前，客户端检查在后。*
 
 这里说的"事后检查"有明确范围。`v0.3.13.post1` 中，`RealClient::get_buffer_internal` 的 `LOCAL_DISK` 全量 offload 分支直接调用 `batch_get_into_offload_object_internal`，之后只做 checksum，不调用 `IsLeaseExpired`，因此不经过 `Client::Get` 的同一处事后检查。同一实现里的 `DISK` 副本仍走 `Client::Get`，会经过检查。所以例外属于那条 offload 路径，不能外推到所有磁盘读取。
 

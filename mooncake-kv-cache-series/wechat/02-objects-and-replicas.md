@@ -1,4 +1,4 @@
-# 第2篇｜一个 KV Cache 对象，在 Mooncake 里到底怎么放？
+# 一个 KV Cache 对象，在 Mooncake 里到底怎么放？
 
 **摘要：**key K 在 Master 里变成对象元数据，R1、R2 各占一段内存。对象、副本、Segment、Slice 分别回答什么？
 

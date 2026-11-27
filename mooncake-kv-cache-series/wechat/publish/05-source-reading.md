@@ -1,8 +1,8 @@
-# 第5篇｜Mooncake 里 key 明明存在，为什么还是读不到副本？
+# Mooncake 报 REPLICA_IS_NOT_READY，应该从哪里查起？
 
 **摘要：**推理实例 B 查询 key `K` 却收到 `REPLICA_IS_NOT_READY`。同一个错误码可能来自不同分支；沿查询走四站，看每一站能排除什么、下一步该查什么。
 
-在 Mooncake 里，推理实例 B（下文简称实例 B）查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
+推理实例 B 查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
 
 这个错误容易被直接理解成"对象不存在"或"再等等就好"。但同一个返回码背后，可能是副本还在 `PROCESSING`，也可能是句柄或传输端点失效。只看一行错误日志，分不出是哪一种。
 
@@ -47,12 +47,15 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 
 因此，`REPLICA_IS_NOT_READY` 还排除了"所有副本都已移除"。它表示列表为空，但至少有一个副本不是 `REMOVED`——可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效。
 
-把这条查询路径压成判断顺序，就是：
+把这条查询路径压成一张排查表：
 
-1. key 不存在 → `OBJECT_NOT_FOUND`；
-2. key 存在，且存在通过 `IsReplicaReadable` 的副本 → 返回可读副本列表与 lease；
-3. key 存在，没有可读副本，且所有副本都是 `REMOVED` → `OBJECT_NOT_FOUND`；
-4. key 存在，没有可读副本，但不是全部 `REMOVED` → `REPLICA_IS_NOT_READY`。
+| 观察到什么 | 能排除什么 | 下一步查哪里 |
+|---|---|---|
+| `OBJECT_NOT_FOUND` | 无法据此区分"从未写入"与"副本全部移除" | 核对 key 与命名空间；再查副本是否都已 `REMOVED` |
+| `REPLICA_IS_NOT_READY` | key 存在；至少一个副本不是 `REMOVED`，但没有副本通过 `IsReplicaReadable` | 查副本状态、内存/NoF 句柄、传输端点 |
+| 可读副本列表与 lease | 查询阶段已通过 | 若后续仍失败，转向客户端选择、搬运与 lease 检查 |
+
+表中前两行对应第二站到第四站；第三行把排查引向查询之后的阶段。
 
 ## 用测试确认 PROCESSING 这一种情况
 

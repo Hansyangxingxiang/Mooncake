@@ -1,14 +1,14 @@
-# 第4篇｜Mooncake 里 KV Cache 字节读回来了，这次 Get 为什么还可能失败？
+# KV 已经读回本地，这次 Get 为什么还会返回 LEASE_EXPIRED？
 
 **摘要：**推理实例 B 从 R1 读回了字节，这次 Get 仍可能失败。定位、搬完、可接受，是三个不同时刻。
 
-在 Mooncake 里，推理实例 B（下文简称实例 B）查询 key `K`，Master 返回 R1 的副本描述与一段读保护。
+推理实例 B 在 Store 中查询 key `K`，Master 返回 R1 的副本描述与一段读保护。
 
 B 开始从 R1 搬运数据。传输很慢，跨过了 lease 的截止时间。字节最终全部到达本地 buffer。
 
 这时候，这次 Get 算成功吗？
 
-答案取决于一个容易被忽略的顺序：字节先搬完，检查放在后面。 本篇只跟 B 的这一次慢读，把它拆成"已定位、已搬完、可接受"三个时刻，说明为什么读回字节不等于可以接受结果。后面的 `LOCAL_DISK` offload 分支是一个明确的例外。
+答案取决于一个容易被忽略的顺序：字节先搬完，检查放在后面。本篇只跟 B 的这一次慢读，把它拆成"已定位、已搬完、可接受"三个时刻，说明为什么读回字节不等于可以接受结果。
 
 ## 一次慢读的时间线
 
@@ -18,13 +18,13 @@ Lease 提供的正是这个有边界的读取窗口。它保护的不只是地�
 
 Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。客户端不是直接使用 Master 的时间：它在发出查询 RPC 之前先取一次本地 `steady_clock` 起点，收到响应后用 `start_time + lease_ttl_ms` 算出截止时间。因此查询 RPC 本身的耗时也计入客户端的可用窗口；TTL 不是从响应到达才开始计时。
 
-按相对时间展开这次慢读。假设 lease TTL 是 200ms——这个数值只用于示意，不是默认配置：
+按相对时间展开这次慢读。假设 lease TTL 是 200 ms——这个数值只用于示意，不是默认配置：
 
 ![配图1：一次跨过 lease 到期的读取时间线。](images/04-get-and-lease-fig1.png)
 
-图注：B 在查询前取本地起点，截止 = 起点 + TTL。搬运跨过截止点后，字节仍可能到达，但事后检查返回 `LEASE_EXPIRED`。橙色虚线框标出到期点；`LOCAL_DISK` offload 例外见正文。
+图注：橙色虚线框是 200 ms 到期点，最后一项是 260 ms 的完成点；字节到达在前，客户端检查在后。
 
-这里说的"事后检查"有明确范围。`v0.3.13.post1` 中，`RealClient::get_buffer_internal` 的 `LOCAL_DISK` 全量 offload 分支直接调用 `batch_get_into_offload_object_internal`，之后只做 checksum，不调用 `IsLeaseExpired`，因此不经过 `Client::Get` 的同一处事后检查。同一实现里的 `DISK` 副本仍走 `Client::Get`，会经过检查。所以例外属于那条 offload 路径，不能外推到所有磁盘读取。
+260 ms 时，字节已经到达本地 buffer；随后的检查发现保护窗口已经结束，`Client::Get` 返回 `LEASE_EXPIRED`。这个返回码说明客户端应拒绝本次结果；R1 是否已经回收，仍由 Master 侧的回收流程决定。
 
 这条路径采用"尽力读 + 事后否决"：先完成传输，再判断这次读取是否仍在承诺窗口内。
 
@@ -37,7 +37,7 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 1. **查询**：从 Master 拿到可读副本列表与 lease。
 2. **选择**：客户端在列表里挑一个副本。
 3. **搬运**：按副本介质和目标 buffer 选择传输方式。
-4. **检查**：传输结果、可选校验、lease 全部通过，才接受结果；这是经 `Client::Get` 的路径，`LOCAL_DISK` offload 例外见上。
+4. **检查**：传输结果、可选校验、lease 全部通过，才接受结果。
 
 Master 只过滤并返回可读副本列表，不替客户端选副本。选择发生在客户端：
 
@@ -69,6 +69,8 @@ lease 到期只代表保护窗口结束，不代表对象立刻被删除。有�
 
 前者是读方看到的错误，后者是资源侧的动作。中间隔着完整的回收判断。
 
+**一个例外：`LOCAL_DISK` 全量 offload。** `v0.3.13.post1` 中，`RealClient::get_buffer_internal` 的 `LOCAL_DISK` 全量 offload 分支直接调用 `batch_get_into_offload_object_internal`，之后只做 checksum，不调用 `IsLeaseExpired`，因此不经过 `Client::Get` 的同一处事后检查。同一实现里的 `DISK` 副本仍走 `Client::Get`，会经过检查。这个例外只属于那条 offload 路径，不能外推到所有磁盘读取。
+
 ## 错误分三段保留
 
 把错误按阶段分开，上层才能决定是重试、换副本，还是重算。
@@ -96,8 +98,6 @@ lease 到期只代表保护窗口结束，不代表对象立刻被删除。有�
 ## 总结
 
 经 `Client::Get` 的读取，接受结果的条件是：传输成功、可选 checksum 通过、lease 未过期。字节到达本地 buffer 只是第一个条件；`LEASE_EXPIRED` 表示这次结果不再受读保护，不等于数据损坏，也不等于 R1 空间已经回收。
-
-`LOCAL_DISK` 全量 offload 分支是明确例外：它走 `batch_get_into_offload_object_internal`，之后只做 checksum，不经过同一处 lease 检查。因此，这条结论不能外推到所有磁盘读取。
 
 **源码延伸：**原系列篇3；`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。
 

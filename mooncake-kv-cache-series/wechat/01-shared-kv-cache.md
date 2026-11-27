@@ -1,4 +1,4 @@
-# 第1篇｜同样的 1,024 个前缀 token，第二台推理实例还要再算一遍吗？
+# 同样的 1,024 个前缀 token，第二台推理实例还要重算吗？
 
 **摘要：**推理实例 A 已经算过 1,024 个 token 的前缀，推理实例 B 的请求只有后文不同。模型、tokenizer、缓存布局和命名空间兼容时，B 可以加载这段 KV 而不重算；Mooncake 要让这份数据能被 B 找到并读取。
 
@@ -41,6 +41,8 @@ Mooncake 提供 Store 和 Transfer Engine；识别前缀、生成 key、最终�
 实际搬运字节的是嵌入进程中的 Transfer Engine。它根据配置和运行条件，使用 TCP、RDMA 等后端完成传输。
 
 *配图1：A、B、Master 与 R1 的位置关系。*
+
+<!-- 手机发布版配图由 figures/01-shared-kv-cache-fig1.dot 渲染；下方 Mermaid 保留作语义参考。 -->
 
 ```mermaid
 flowchart TB

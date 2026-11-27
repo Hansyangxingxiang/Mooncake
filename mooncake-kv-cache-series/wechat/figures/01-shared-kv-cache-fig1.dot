@@ -1,0 +1,30 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad=0.15, nodesep=0.35, ranksep=0.42,
+         fontname="Noto Sans CJK SC"];
+  node [shape=box, style="rounded,filled", fillcolor="#F2F7FF", color="#1677FF",
+        fontcolor="#0B1F3A", fontname="Noto Sans CJK SC", fontsize=26,
+        margin="0.14,0.09"];
+  edge [fontname="Noto Sans CJK SC", fontsize=22, color="#D46B08",
+        fontcolor="#B5480A", penwidth=2, style=dashed, arrowsize=1.0];
+
+  M  [label="Master\n登记位置与状态"];
+  A  [label="实例 A"];
+  B  [label="实例 B"];
+  subgraph cluster_seg {
+    label="目标 Segment";
+    fontname="Noto Sans CJK SC"; fontsize=20; color="#8FA6C8";
+    style="rounded,dashed"; margin=12;
+    R1 [label="R1\nKV 副本", shape=box3d];
+  }
+
+  M -> A [style=invis, weight=10];
+  M -> B [style=invis, weight=10];
+  { rank=same; A; B; }
+
+  M -> A  [dir=back, label="① 申请 / 提交"];
+  M -> B  [dir=both, label="② 查询位置\n← 返回副本"];
+  A -> R1 [label="③ 写入 KV", style=bold, color="#1677FF",
+           fontcolor="#0B1F3A", penwidth=4];
+  R1 -> B [label="④ 读回 KV", constraint=false, style=bold,
+           color="#1677FF", fontcolor="#0B1F3A", penwidth=4];
+}

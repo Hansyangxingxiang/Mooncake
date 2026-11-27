@@ -8,17 +8,17 @@
 
 | 篇次 | 文章 | 对应源码解析版 |
 |---|---|---|
-| 1 | [同样的 1,024 个前缀 token，第二台推理实例还要再算一遍吗？](01-shared-kv-cache.md) | [篇0：架构总览](../00-architecture-overview.md) |
+| 1 | [同样的 1,024 个前缀 token，第二台推理实例还要重算吗？](01-shared-kv-cache.md) | [篇0：架构总览](../00-architecture-overview.md) |
 | 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) | [篇4：核心数据结构](../04-core-data-structures.md) |
-| 3 | [Mooncake 里 KV Cache 字节已经写完，为什么另一个 Client 还读不到？](03-put-visibility.md) | [篇2：Put 路径](../02-put-path.md) |
-| 4 | [Mooncake 里 KV Cache 字节读回来了，这次 Get 为什么还可能失败？](04-get-and-lease.md) | [篇3：Get 路径](../03-get-path.md) |
-| 5 | [Mooncake 里 key 明明存在，为什么还是读不到副本？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
+| 3 | [KV 已经写到远端，Mooncake 什么时候才让其他实例读？](03-put-visibility.md) | [篇2：Put 路径](../02-put-path.md) |
+| 4 | [KV 已经读回本地，这次 Get 为什么还会返回 LEASE_EXPIRED？](04-get-and-lease.md) | [篇3：Get 路径](../03-get-path.md) |
+| 5 | [Mooncake 报 REPLICA_IS_NOT_READY，应该从哪里查起？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
 | 6 | [Transfer Engine 返回成功，数据就传完了吗？](06-transfer-lifecycle.md) | [篇5：TE 生命周期](../05-transfer-engine-task-lifecycle.md) |
-| 7 | [一次 RDMA 传输，究竟经历了什么？](07-rdma-data-path.md) | [篇6：RDMA 数据路径](../06-rdma-data-path.md) |
+| 7 | [一次 RDMA WRITE：KV 怎么写到远端，谁来确认传输完成？](07-rdma-data-path.md) | [篇6：RDMA 数据路径](../06-rdma-data-path.md) |
 | 8 | [双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？](08-multi-nic-numa.md) | [篇7：多网卡与 NUMA](../07-multi-nic-numa.md) |
-| 9 | [缓存满了，刚被读到的 KV Cache，淘汰线程为什么删不掉它？](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
+| 9 | [已经选中要淘汰的 KV，为什么又被跳过了？](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
 | 10 | [KV Cache 已经写进 SSD，为什么其他节点还可能读不到？](10-ssd-tiering.md) | [篇9：SSD 分层](../09-ssd-tiering.md) |
-| 11 | [共享了 KV Cache，为什么推理不一定更快？](11-kv-reuse-and-inference.md) | [篇10：vLLM 集成](../10-vllm-integration.md) |
+| 11 | [共享 KV Cache 命中了，首个 token 为什么还可能没变快？](11-kv-reuse-and-inference.md) | [篇10：vLLM 集成](../10-vllm-integration.md) |
 
 ## 公众号排版
 
@@ -37,7 +37,9 @@
 
 “配图”说明用于标识插图位置；发布时用导出的图片替换代码块，并保留有解释作用的图注。原理图不表达未经验证的性能倍数。
 
-11 篇均已由 `build_publish.py` 生成 `publish/` 目录下的发布稿 Markdown 与 PNG。`publish/` 下的 HTML、report.json 与 manifest.json 已删除；如需本地预览，需要重新运行完整构建。此前的 360px、390px Chrome 视口检查和第 1、3、4、6、7、10 篇人工复核针对已删除的旧 HTML，不能代表当前 Markdown。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
+第 1 篇配图1 与第 7 篇配图2 需要固定上下位置和就近标注，Mermaid 自动布局无法稳定满足手机单栏阅读，已改用 `figures/*.dot`（Graphviz）作为图源，并导出到 `publish/images/`。其余配图仍以正文中的 Mermaid 块为图源。本轮标题与正文修订直接落在 `publish/` 发布稿，源稿正文尚未逐段回填；重跑完整构建前需先同步，否则会覆盖发布稿正文。
+
+11 篇均已由 `build_publish.py` 生成 `publish/` 目录下的发布稿 Markdown 与 PNG，其中第 1 篇配图1 与第 7 篇配图2 的 PNG 改用 `dot` 从上述 `.dot` 图源渲染。`publish/` 下的 HTML、report.json 与 manifest.json 已删除；如需本地预览，需要重新运行完整构建，但完整构建会用 Mermaid 版覆盖这两张 DOT 渲染的 PNG，之后须按前文命令重新导出。此前的 360px、390px Chrome 视口检查和第 1、3、4、6、7、10 篇人工复核针对已删除的旧 HTML，不能代表当前 Markdown。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
 
 ## 版本与证据边界
 

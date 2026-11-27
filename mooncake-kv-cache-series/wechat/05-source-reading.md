@@ -1,4 +1,4 @@
-# 第5篇｜Mooncake 里 key 明明存在，为什么还是读不到副本？
+# Mooncake 报 REPLICA_IS_NOT_READY，应该从哪里查起？
 
 **摘要：**推理实例 B 查询 key `K` 却收到 `REPLICA_IS_NOT_READY`。同一个错误码可能来自不同分支；沿查询走四站，看每一站能排除什么、下一步该查什么。
 

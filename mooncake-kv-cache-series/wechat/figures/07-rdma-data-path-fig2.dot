@@ -1,0 +1,39 @@
+digraph G {
+  graph [rankdir=TB, bgcolor="white", pad=0.25, nodesep=0.35, ranksep=0.4,
+         fontname="Noto Sans CJK SC"];
+  node [shape=box, style="rounded,filled", fillcolor="#F2F7FF", color="#1677FF",
+        fontcolor="#0B1F3A", fontname="Noto Sans CJK SC", fontsize=24,
+        margin="0.14,0.09"];
+  edge [fontname="Noto Sans CJK SC", fontsize=20, color="#D46B08",
+        fontcolor="#B5480A", penwidth=2, style=dashed, arrowsize=1.0];
+
+  subgraph cluster_local {
+    label="本地主机";
+    fontname="Noto Sans CJK SC"; fontsize=21; color="#8FA6C8";
+    style="rounded,dashed"; margin=14; labeljust="l";
+    BUF [label="源 buffer\n（lkey）"];
+    W   [label="本地 worker"];
+    LR  [label="本地 RNIC"];
+    CQ  [label="本地 CQ"];
+    { rank=same; BUF; W; BUF -> W [style=invis]; }
+    { rank=same; LR; CQ; LR -> CQ [style=invis]; }
+  }
+
+  subgraph cluster_remote {
+    label="远端主机";
+    fontname="Noto Sans CJK SC"; fontsize=21; color="#8FA6C8";
+    style="rounded,dashed"; margin=14; labeljust="l";
+    RR [label="远端 RNIC"];
+    R1 [label="R1\n远端已注册内存"];
+  }
+
+  W   -> LR [label="① 提交 WR"];
+  BUF -> LR [label="② 取源字节", style=bold, color="#1677FF",
+              fontcolor="#0B1F3A", penwidth=4];
+  LR  -> CQ [label="CQE", constraint=false, penwidth=1.2, arrowsize=0.8];
+  W   -> CQ [label="③ 轮询 CQ"];
+  LR  -> RR [label="② RDMA WRITE", style=bold, color="#1677FF",
+              fontcolor="#0B1F3A", penwidth=4];
+  RR  -> R1 [label="DMA 写入", style=bold, color="#1677FF",
+              fontcolor="#0B1F3A", penwidth=4];
+}

@@ -1,8 +1,8 @@
-# 第11篇｜共享了 KV Cache，为什么推理不一定更快？
+# 共享 KV Cache 命中了，首个 token 为什么还可能没变快？
 
 **摘要：**推理实例 A 写入的 1,024 token 前缀，推理实例 B 能命中。B 什么时候拿到首个 token，取决于加载、同步和调度，而不只取决于"命中"。
 
-回到第1篇的推理实例 A 和推理实例 B（下文简称 A、B）：同一段 1,024 个 token 的前缀，A 已经算过并以 key `K` 写入共享缓存，B 的请求命中这段前缀。
+回到第1篇的推理实例 A 和推理实例 B：同一段 1,024 个 token 的前缀，A 已经算过并以 key `K` 写入共享缓存，B 的请求命中这段前缀。
 
 B 不用再 Prefill 这 1,024 个 token，是否就能更早输出首个 token？
 
@@ -25,17 +25,17 @@ B 的框架大致要经过这些动作：
 
 ## Store 共享缓存与 PD 直传要分开
 
-一种路径是共享 Store：按 key 查找并加载已有 KV 对象。A 和 B 不需要知道对方是谁，只需要生成兼容的 key，并读出同一个对象。
+先看共享 Store 的跨请求复用。A 为前一个请求写入这段前缀的 KV；另一个请求落到 B 上，B 用兼容的 key 查询并加载同一个对象。两个请求共享前缀，但 A 和 B 不需要知道对方是谁。
 
-![配图1：跨请求的 key 查询与加载。](images/11-kv-reuse-and-inference-fig1.png)
+![配图1：两个请求通过同一个 key 复用前缀 KV。](images/11-kv-reuse-and-inference-fig1.png)
 
-图注：A 在一个请求写入 K，B 在另一个请求按同一 key 查询并加载；两者不需要知道对方是谁。图中省略布局转换与调度器确认。
+图注：请求 1 由 A 写入 `K`；请求 2 由 B 按同一 key 查询并加载。A 提交 `PutEnd` 后，B 才可能查到 R1；图中省略布局转换与调度器确认。
 
-另一种路径是 Prefill/Decode 分离中的点对点传输：把某个请求产生的 KV 交给对应的 Decode 实例。它按请求协调，不依赖一个可被任意请求查询的共享池。
+另一种路径是 Prefill/Decode 分离中的点对点传输。这时不是两个请求共享一段前缀，而是同一个请求从 Prefill 交给 Decode：Prefill 阶段算完本轮请求的 KV，交给 Decode 阶段继续生成。
 
-![配图2：同一请求内的 Prefill→Decode 交接。](images/11-kv-reuse-and-inference-fig2.png)
+![配图2：同一个请求从 Prefill 交给 Decode。](images/11-kv-reuse-and-inference-fig2.png)
 
-图注：Prefill 实例把本轮请求的 KV 直接交给 Decode 实例；按请求协调，不经过可被任意请求查询的共享池。
+图注：交接按请求协调，不经过可被任意请求查询的共享池；两个阶段因此不需要共享 key。
 
 两者都可以使用 Mooncake 的传输能力，但协调对象和生命周期不同。本篇的 A/B 例子属于 Store 共享缓存路径。
 

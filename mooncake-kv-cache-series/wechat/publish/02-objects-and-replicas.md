@@ -1,8 +1,8 @@
-# 第2篇｜一个 KV Cache 对象，在 Mooncake 里到底怎么放？
+# 一个 KV Cache 对象，在 Mooncake 里到底怎么放？
 
 **摘要：**key K 在 Master 里变成对象元数据，R1、R2 各占一段内存。对象、副本、Segment、Slice 分别回答什么？
 
-在 Mooncake 里，推理实例 A（下文简称 A）算完 1,024 个 token 的前缀 KV，把数据以 key `K` 写入共享缓存。
+推理实例 A 算完 1,024 个 token 的前缀 KV，把数据以 key `K` 写入共享缓存。
 
 从 A 调用 Put 的角度看，这只是"写一个对象"。但在 Mooncake 内部，这个动作经过了好几层结构：key 先变成元数据，元数据下面挂着副本，副本指向一段分配好的内存，传输时又被组织成 slice。
 

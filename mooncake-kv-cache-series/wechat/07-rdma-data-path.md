@@ -1,4 +1,4 @@
-# 第7篇｜一次 RDMA 传输，究竟经历了什么？
+# 一次 RDMA WRITE：KV 怎么写到远端，谁来确认传输完成？
 
 **摘要：**推理实例 A 把主机内存里的 KV 写到远端 R1。沿着一次 WRITE 看源 buffer、目标 buffer、WR 提交与本地完成观察。
 
@@ -58,6 +58,8 @@ WR 描述希望网卡执行的工作。在这条固定路径上，`RdmaEndPoint:
 这里观察的是**本地完成**：本地 RNIC 已经回收这次 WRITE 的完成事件。远端应用是否已经处理这块内存，不在这个 CQE 的语义里。
 
 *配图2：一次 WRITE 与本地完成。*
+
+<!-- 手机发布版配图由 figures/07-rdma-data-path-fig2.dot 渲染；下方 Mermaid 保留作语义参考。 -->
 
 ```mermaid
 flowchart TB
