@@ -44,7 +44,7 @@ WR 描述希望网卡执行的工作。在这条固定路径上，`RdmaEndPoint:
 
 一次 poll 最多取 64 个 CQE。即使每个 WR 都设置了 `IBV_SEND_SIGNALED`，上层看到的也是 CQE 批量回收后映射到 slice，再由 slice 聚合到 task，不意味着每个 WR 都由上层单独处理一个事件。
 
-这里观察的是**本地完成**：本地 RNIC 已经回收这次 WRITE 的完成事件。远端应用是否已经处理这块内存，不在这个 CQE 的语义里。
+这里观察的是本地完成：本地 RNIC 已经回收这次 WRITE 的完成事件。远端应用是否已经处理这块内存，不在这个 CQE 的语义里。
 
 ![配图2：一次 WRITE 与本地完成。](images/07-rdma-data-path-fig2.png)
 

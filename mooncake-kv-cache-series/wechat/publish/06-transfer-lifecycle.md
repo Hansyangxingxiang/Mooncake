@@ -6,9 +6,7 @@
 
 这段逻辑看起来很自然，但如果接口采用异步执行，它就可能过早释放仍被后端使用的数据。
 
-理解 Transfer Engine，首先要区分两种成功：
-
-**请求被接受，与传输已经完成。**
+理解 Transfer Engine，首先要分清两种“成功”：一种是请求被接受，另一种是传输真的完成了。
 
 ## 一个 batch 里有三种层次
 
@@ -28,10 +26,7 @@
 
 `MultiTransport::submitTransfer` 先按请求建立 task，再按 transport 分组提交。后端 A 接受了前两个请求的工作；后端 B 在提交第三个请求时返回错误。
 
-这里有两个时间点不能合并：
-
-- **后端 A 接受工作**：task 已经进入后端队列或设备路径，但不代表数据传输完成。
-- **后端 B 返回错误**：这是提交阶段的错误，不代表后端 A 已经接受的工作被撤销。
+这里有两个时间点不能合并。后端 A 接受工作，只是 task 进入后端队列或设备路径，不代表数据传输完成；后端 B 返回错误属于提交阶段的错误，也不代表后端 A 已经接受的工作被撤销。
 
 `submitTransfer` 不会因为后端 B 失败就停止处理其他分组，也不会回头取消后端 A 已接收的 task。它继续尝试剩余分组，最后返回一个非 OK 状态。
 
@@ -71,9 +66,9 @@
 
 请求描述、数据 buffer、batch 资源的生命周期，不一定完全相同。仍以这个跨后端的 batch 为例：
 
-- **请求描述**：task 里的 `request` 指向调用方传入的 `TransferRequest` 向量元素（`task.request = &entries[i]`），不是深拷贝。`getTransferStatus` 仍会通过该指针读取请求长度，所以调用方必须让该向量在原位保持有效，直到 batch 被释放。后端 B 提交失败，不会让这个要求消失。
-- **数据 buffer**：`Slice` 保存本地地址、长度和远端地址；本地 buffer 必须保持注册且不被释放，直到传输完成。后端 A 已接收的工作可能仍会访问它，不能因为整体返回错误就提前释放。
-- **BatchID**：类型是 `uint64_t`；`MultiTransport` 把新建的 `BatchDesc*` 转成这个整数返回，`freeBatchID` 再转回指针。调用方只能把它当不透明句柄。只有 `freeBatchID` 返回 `OK` 才删除 `BatchDesc`；返回 `BatchBusy` 或其他错误时，batch 仍然存在。
+- 请求描述：task 里的 `request` 指向调用方传入的 `TransferRequest` 向量元素（`task.request = &entries[i]`），不是深拷贝。`getTransferStatus` 仍会通过该指针读取请求长度，所以调用方必须让该向量在原位保持有效，直到 batch 被释放。后端 B 提交失败，不会让这个要求消失。
+- 数据 buffer：`Slice` 保存本地地址、长度和远端地址；本地 buffer 必须保持注册且不被释放，直到传输完成。后端 A 已接收的工作可能仍会访问它，不能因为整体返回错误就提前释放。
+- BatchID：类型是 `uint64_t`；`MultiTransport` 把新建的 `BatchDesc*` 转成这个整数返回，`freeBatchID` 再转回指针。调用方只能把它当不透明句柄。只有 `freeBatchID` 返回 `OK` 才删除 `BatchDesc`；返回 `BatchBusy` 或其他错误时，batch 仍然存在。
 
 这三个对象不一定同时释放。释放 batch 只处理 batch 资源；数据 buffer 是否还能被后端访问，要单独判断。数据到达也不代表请求描述可以立刻废弃。
 

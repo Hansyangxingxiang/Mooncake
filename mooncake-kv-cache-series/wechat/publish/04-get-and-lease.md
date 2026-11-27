@@ -8,7 +8,7 @@ B 开始从 R1 搬运数据。传输很慢，跨过了 lease 的截止时间。�
 
 这时候，这次 Get 算成功吗？
 
-答案取决于一个容易被忽略的顺序：**数据搬完在前，结果检查在后。** 本篇只跟 B 的这一次慢读，把它拆成"已定位、已搬完、可接受"三个时刻，说明为什么读回字节不等于可以接受结果。后面的 `LOCAL_DISK` offload 分支是一个明确的例外。
+答案取决于一个容易被忽略的顺序：字节先搬完，检查放在后面。 本篇只跟 B 的这一次慢读，把它拆成"已定位、已搬完、可接受"三个时刻，说明为什么读回字节不等于可以接受结果。后面的 `LOCAL_DISK` offload 分支是一个明确的例外。
 
 ## 一次慢读的时间线
 
@@ -39,7 +39,7 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 3. **搬运**：按副本介质和目标 buffer 选择传输方式。
 4. **检查**：传输结果、可选校验、lease 全部通过，才接受结果；这是经 `Client::Get` 的路径，`LOCAL_DISK` offload 例外见上。
 
-**Master 只过滤并返回可读副本列表，不替客户端选副本。** 选择发生在客户端：
+Master 只过滤并返回可读副本列表，不替客户端选副本。选择发生在客户端：
 
 - `Client::Get` 内部调用 `FindFirstCompleteReplica`，取列表中第一个 `COMPLETE` 副本；
 - `RealClient` 的 ranged 路径在进入 `Client::Get` 之前，用 `SelectBestReplica` 先选一次，再把副本列表裁成只剩选中的那一个。
@@ -48,13 +48,7 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 
 搬运方式则取决于介质和目标：
 
-**MEMORY（目标 buffer 在主机且可直读）**：交给 Transfer Engine 读到目标 buffer。
-
-**MEMORY（目标 buffer 在 GPU 等设备）**：主机暂存后再复制到目标。
-
-**LOCAL_DISK**：存储节点执行 offload 读取。
-
-**DISK / DFS**：临时 buffer 后再 scatter。
+目标 buffer 在主机且可直读的 MEMORY 副本，交给 Transfer Engine 直接读到目标 buffer；目标 buffer 在 GPU 等设备上时，先落到主机暂存，再复制过去。LOCAL_DISK 由存储节点执行 offload 读取。DISK 和 DFS 则先读进临时 buffer，再 scatter。
 
 "直读目标 buffer"通常表示避免额外的应用层中转，**不是对所有后端、所有设备的零拷贝承诺**。TCP、RDMA、GPU 路径内部是否拷贝，要按实际后端判断。
 
@@ -62,11 +56,11 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 
 一次慢读结束后，有三个结果需要分开：
 
-- **字节是否到了本地 buffer**：TransportRead 或磁盘读取已经返回，数据可能完整地落在 buffer 里。
-- **Get 是否接受这次结果**：只有在传输成功、可选 checksum 通过、lease 未过期时，`Client::Get` 才把它当作可用结果。
-- **R1 的空间是否已被回收**：这是 Master 侧的资源动作，不由这次 Get 的返回码直接决定。
+- 字节是否到了本地 buffer：TransportRead 或磁盘读取已经返回，数据可能完整地落在 buffer 里。
+- Get 是否接受这次结果：只有在传输成功、可选 checksum 通过、lease 未过期时，`Client::Get` 才把它当作可用结果。
+- R1 的空间是否已被回收：这是 Master 侧的资源动作，不由这次 Get 的返回码直接决定。
 
-lease 到期只代表**保护窗口结束**，不代表对象立刻被删除。有效期内的 lease 会阻止普通 `Remove` 与淘汰路径回收这份对象；删除侧遇到的 `OBJECT_HAS_LEASE` 就是这一保护的证据。
+lease 到期只代表保护窗口结束，不代表对象立刻被删除。有效期内的 lease 会阻止普通 `Remove` 与淘汰路径回收这份对象；删除侧遇到的 `OBJECT_HAS_LEASE` 就是这一保护的证据。
 
 但实际回收还要经过淘汰、引用计数、后台任务等一系列判断。所以不要把两件事混为一谈：
 
@@ -79,16 +73,16 @@ lease 到期只代表**保护窗口结束**，不代表对象立刻被删除。�
 
 把错误按阶段分开，上层才能决定是重试、换副本，还是重算。
 
-**查询阶段**
+查询阶段：
 
 - `OBJECT_NOT_FOUND`：对象不存在，或所有副本都已 `REMOVED`。应当放弃。
 - `REPLICA_IS_NOT_READY`：对象存在，但暂时没有可用副本。值得短暂重试。
 
-**选择阶段**
+选择阶段只有一个错误：
 
 - `INVALID_REPLICA`：列表里没有选到 `COMPLETE` 副本。
 
-**搬运与完成检查**
+搬运与完成检查：
 
 在 `Client::Get` 中，顺序是：先 `TransferRead`（或 `ReadDfsReplica`），再可选 checksum，最后检查 lease。传输失败直接返回后端错误；checksum 不符返回 `CHECKSUM_MISMATCH`；只有前两者都通过，才可能返回 `LEASE_EXPIRED`。
 

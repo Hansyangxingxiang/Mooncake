@@ -8,7 +8,7 @@
 
 如果系统只看"空间已经分配"，就可能把一份尚未写完的数据交出去。如果只看"字节已经到达"，又可能忽略提交这一步。
 
-本篇讨论**普通新对象 Put**，不混入覆盖写。沿着 `Client::Put` 走一遍，看清数据搬完、副本提交、读方可见这三个时刻为什么不能合并。
+本篇讨论的是普通新对象 Put，不混入覆盖写。沿着 `Client::Put` 走一遍，看清数据搬完、副本提交、读方可见这三个时刻为什么不能合并。
 
 ## 先申请，再搬运，最后提交
 
@@ -18,9 +18,9 @@
 2. 数据传输：把字节写入目标地址。
 3. `PutEnd`：提交写入结果，让副本变得可读。
 
-`PutStart` 返回的不是"稍后告诉你"，而是**已经分配好的副本描述**：地址、长度、传输端点。此时副本已经进入 Master 的元数据表，但状态是 `PROCESSING`。
+`PutStart` 返回的不是“稍后告诉你”，而是已经分配好的副本描述：地址、长度、传输端点。此时副本已经进入 Master 的元数据表，但状态是 `PROCESSING`。
 
-接下来，A 通过 Transfer Engine 把切片写到目标副本。传输返回成功，只说明字节到了远端内存段，**不说明这份副本可以被读**。
+接下来，A 通过 Transfer Engine 把切片写到目标副本。传输返回成功，只说明字节到了远端内存段，不说明这份副本可以被读。
 
 真正打开可见性的是 `PutEnd`。Master 把目标副本从 `PROCESSING` 翻成 `COMPLETE`。这是首次写入的正常路径：传输完成、`PutEnd` 成功，`Client::Put` 才返回成功。
 
@@ -82,25 +82,14 @@ B 此时查询 K，能拿到 R1 的描述。A 看到的"重试成功"表示"对�
 
 超过 discard 窗口后，新的 `PutStart` 才能顶替旧对象，并重新分配副本。旧副本先移入 `discarded_replicas_`，等到 release 超时才真正释放。顶替不是复用旧空间。
 
-**无对象（首次写入正常路径）**
-- 写方：`PutStart` 返回副本描述；传输后 `PutEnd` 成功，`Client::Put` 返回成功。
-- 本次 buffer：写入。
-- 读方：`PutEnd` 前得到 `REPLICA_IS_NOT_READY`；之后返回副本描述。
+把四条路径并排看：
 
-**已有 `COMPLETE` 副本（含 `PutEnd` 成功但响应丢失）**
-- 写方：`OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功。
-- 本次 buffer：不写入，已有内容不变。
-- 读方：返回副本描述。
-
-**`PROCESSING`，未超过 discard（默认 30 秒）**
-- 写方：`OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功。
-- 本次 buffer：不写入，原 `PROCESSING` 仍不可读。
-- 读方：得到 `REPLICA_IS_NOT_READY`。
-
-**`PROCESSING`，超过 discard（默认 30 秒）**
-- 写方：`PutStart` 顶替并返回新副本描述；传输后 `PutEnd` 成功则返回成功。
-- 本次 buffer：写入新分配的副本；旧副本进入 `discarded_replicas_`。
-- 读方：新 `PutEnd` 前得到 `REPLICA_IS_NOT_READY`；之后返回新副本描述。
+| 对象状态 | 写方 | 本次 buffer | 读方 |
+|---|---|---|---|
+| 无对象（首次写入正常路径） | `PutStart` 返回副本描述；传输后 `PutEnd` 成功，`Client::Put` 返回成功 | 写入 | `PutEnd` 前得到 `REPLICA_IS_NOT_READY`；之后返回副本描述 |
+| 已有 `COMPLETE` 副本（含 `PutEnd` 成功但响应丢失） | `OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功 | 不写入，已有内容不变 | 返回副本描述 |
+| `PROCESSING`，未超过 discard（默认 30 秒） | `OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功 | 不写入，原 `PROCESSING` 仍不可读 | 得到 `REPLICA_IS_NOT_READY` |
+| `PROCESSING`，超过 discard（默认 30 秒） | `PutStart` 顶替并返回新副本描述；传输后 `PutEnd` 成功则返回成功 | 写入新分配的副本；旧副本进入 `discarded_replicas_` | 新 `PutEnd` 前得到 `REPLICA_IS_NOT_READY`；之后返回新副本描述 |
 
 两个超时都从 `PutStart` 写入的 `metadata.put_start_time` 起算：
 
@@ -120,7 +109,7 @@ B 此时查询 K，能拿到 R1 的描述。A 看到的"重试成功"表示"对�
 默认可靠模式下，条件是严格的：
 
 - 分配到的副本数量满足配置；
-- **已分配副本的传输全部成功**。
+- 已分配副本的传输全部成功。
 
 两者都满足才 `PutEnd(ALL)`；否则 `PutRevoke(ALL)`，本次 Put 失败。
 

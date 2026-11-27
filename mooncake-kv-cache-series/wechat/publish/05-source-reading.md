@@ -14,7 +14,7 @@ B 的查询入口是 [`Client::Query`](https://github.com/kvcache-ai/Mooncake/bl
 
 这一站要看的证据是 RPC 返回状态。如果 Master 返回 `REPLICA_IS_NOT_READY`，`Client::Query` 不会在本地把它改写成别的错误，也不会在这里替调用方选副本。
 
-因此，看到这个错误时可以先排除一种解释：**它不是客户端本地缓存或副本选择阶段产生的，源头在 Master 的查询结果。**
+因此，看到这个错误时可以先排除一种解释：它不是客户端本地缓存或副本选择阶段产生的，源头在 Master 的查询结果。
 
 ## 第二站：Master 先判断 key 是否存在
 
