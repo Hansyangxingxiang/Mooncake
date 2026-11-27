@@ -218,9 +218,9 @@ bool MasterService::IsReplicaReadable(const Replica& replica) const {
 
 1. **`PutStart` 之后、`PutEnd` 之前**：对象存在，但副本是 `PROCESSING`。`GetReplicaList` 返回 `REPLICA_IS_NOT_READY`，不是"对象不存在"。读方读不到，但知道它还在写。
 2. **`PutEnd` 成功之后**：目标副本变 `COMPLETE`，`GetReplicaList` 开始返回它。从这一刻起另一个客户端可以读。
-3. **`Client::Put` 返回成功**：发生在 `PutEnd` 返回之后。所以**Put 成功返回时，对象确实已经可读**——可见性早于返回，不是同时。
+3. **`Client::Put` 返回成功**：首次写入的正常路径里，这发生在 `PutEnd` 返回之后，所以可见性早于返回。但同 key 已存在时，`PutStart` 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 会在传输前提前返回成功；此时对象可能仍是 `PROCESSING`，读方拿到的是 `REPLICA_IS_NOT_READY`。
 
-> **分析（推断）**：因此存在一个短暂窗口：`PutEnd` 已生效、`Client::Put` 尚未返回，此时读方已经能读。反过来不存在"Put 返回成功但读不到"的窗口，除非 `PutEnd` 之后的元数据传播有延迟——本版本里读方每次 Get 都查 Master，没有本地缓存，所以这个窗口为零。
+> **分析（推断）**：因此存在一个短暂窗口：`PutEnd` 已生效、`Client::Put` 尚未返回，此时读方已经能读。反过来，正常首次写入不会出现"Put 返回成功但读不到"的窗口；例外是同 key 已存在时的提前成功返回（上一条）。本版本里读方每次 Get 都查 Master，没有本地缓存，所以正常路径的这个窗口为零。
 
 **网络传输完成 ≠ 对象写入成功**。`TransferWrite` 返回 `OK` 只说明数据到了远端内存段；让对象可读的是 `PutEnd`。这就是两阶段 Put 的意义：把"数据落位"和"对象发布"分开，避免读方看到半写状态。
 
@@ -269,7 +269,7 @@ if (processing_rep != nullptr) {
 
 ### 重复 Put 是否安全
 
-安全，但语义是**幂等而非覆盖**：`PutStart` 收到已存在的 key 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 直接当成功返回（`client_service.cpp:1885`）。已有内容不变。需要覆盖语义要用 `Upsert`。
+对已完成对象是**"已存在即成功"而非覆盖**：`PutStart` 收到已存在的 key 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 直接当成功返回（`client_service.cpp:1887`），已有内容不变。若已有副本仍是 `PROCESSING` 且未超过 discard 超时，`PutStart` 同样返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 也提前返回成功；这次传入的 buffer 并未传输。需要覆盖语义要用 `Upsert`。
 
 ### Client 崩溃：僵尸对象
 
@@ -280,7 +280,7 @@ if (processing_rep != nullptr) {
 | `put_start_discard_timeout_sec` | 30 | 超时后允许后续 `PutStart` 顶替旧的 |
 | `put_start_release_timeout_sec` | 600 | 超时后旧的空间可被淘汰回收 |
 
-**关键细节**：顶替时**不复用旧空间**，而是重新分配；旧空间靠第二条超时回收（`docs/source/design/store/mooncake-store.md:672`）。所以僵尸对象在 30 秒内仍是故障源，只是不再永久阻塞。
+**关键细节**：顶替时**不复用旧空间**，而是重新分配；旧空间靠第二条超时回收（`docs/source/design/store/mooncake-store.md:672`）。所以在 discard 超时前（默认 30 秒），同 key 的新 Put 仍返回成功但不写入，读方仍得到 `REPLICA_IS_NOT_READY`；超时后才能顶替，旧空间要到 release 超时（默认 600 秒）才释放。
 
 ### 并发
 

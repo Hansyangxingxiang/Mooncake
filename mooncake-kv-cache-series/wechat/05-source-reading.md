@@ -1,83 +1,91 @@
-# 第5篇｜读 Mooncake 源码，从哪里开始才不容易迷路？
+# 第5篇｜K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？
 
-**摘要：**沿着一次请求读代码，通常比从目录第一页开始读更有效。关键是找到入口、控制决策和完成条件。
+**摘要：**同一个错误码可能来自不同分支。沿着 B 的一次查询走四站，看每一站能排除什么、下一步该查什么。
 
-打开一个大型基础设施仓库，最大的困难往往不是某段代码看不懂，而是不知道应该先看哪一段。
+实例 B 查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
 
-Mooncake 同时包含存储、传输、Python 绑定和多种硬件后端。顺着目录逐个读，很容易在建立整体认识前，就陷入实现细节。
+这个错误容易被直接理解成"对象不存在"或"再等等就好"。但同一个返回码背后，可能是副本还在 `PROCESSING`，也可能是句柄或传输端点失效。只看一行错误日志，分不出是哪一种。
 
-更有效的方法，是先选一个明确问题。
+本篇不重复第3篇对 Put 可见性的系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
 
-例如：
+## 第一站：Client::Query 只把查询交给 Master
 
-> 调用方写入一个对象后，另一个 Client 为什么能够读到它？
+B 的查询入口是 `Client::Query`。它在发出 RPC 之前取一次本地 `steady_clock` 起点，然后调用 `master_client_.GetReplicaList(object_key)`，把返回的副本列表、lease 截止时间和 object checksum 组装成 `QueryResult`。
 
-## 先找到应用看得见的入口
+这一站要看的证据是 RPC 返回状态。如果 Master 返回 `REPLICA_IS_NOT_READY`，`Client::Query` 不会在本地把它改写成别的错误，也不会在这里替调用方选副本。
 
-Python 用户可以从绑定层开始。
+因此，看到这个错误时可以先排除一种解释：**它不是客户端本地缓存或副本选择阶段产生的，源头在 Master 的查询结果。**
 
-这里主要观察参数如何转换、调用哪个 C++ 接口、错误如何返回，以及等待传输时是否释放 GIL。
+## 第二站：Master 先判断 key 是否存在
 
-接着进入 RealClient，关注 buffer、读取范围、slice 等面向接口的组织方式。
+进入 `MasterService::GetReplicaList`，第一道判断是 `accessor.Exists()`。key 不存在时，Master 直接返回 `OBJECT_NOT_FOUND`。
 
-再往下看 Client，识别元数据交互与数据传输分别在哪里发生。
+所以，如果 B 收到的是 `REPLICA_IS_NOT_READY`，在这个查询时刻，K 的 `ObjectMetadata` 是存在的。至少可以排除"这个 key 从未写入过"。
 
-*配图1：推荐的阅读层次。*
+这里要注意范围：`OBJECT_NOT_FOUND` 也不总等于"从未存在"。对象可能曾经存在，但所有副本都已经被删除或移除；这条分支在第四站会再出现一次。
+
+## 第三站：可读副本是过滤出来的
+
+key 存在之后，`GetReplicaList` 用 `VisitReplicas(IsReplicaReadable)` 遍历副本，只把通过检查的副本放进结果列表。
+
+`IsReplicaReadable` 至少要求：
+
+- 副本状态是 `COMPLETE`；
+- 内存或 NoF 句柄仍然有效；
+- 传输端点没有被标记为失效。
+
+如果 R1 是在 `PutStart` 之后、`PutEnd` 之前被查询，它已经分配了地址，也挂在 K 的元数据下面，但状态仍是 `PROCESSING`。第一项检查就不通过。
+
+这一站能排除"对象根本没有副本"：副本结构已经存在，只是不满足可读条件。接下来还要看，过滤后的列表为什么没有变成另一种错误。
+
+## 第四站：空列表最后分成两种错误
+
+遍历结束后，如果没有选出任何可读副本，`GetReplicaList` 会再判断一次：
+
+- 所有副本都是 `REMOVED`：返回 `OBJECT_NOT_FOUND`；
+- 否则：记录 `replica_not_ready` 日志，返回 `REPLICA_IS_NOT_READY`。
+
+因此，`REPLICA_IS_NOT_READY` 还排除了"所有副本都已移除"。它表示列表为空，但至少有一个副本不是 `REMOVED`——可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效。
+
+*配图1：一次 REPLICA_IS_NOT_READY 的源码分支。*
 
 ```mermaid
 flowchart TB
-    P["Python API：参数与返回值"] --> R["RealClient：buffer 与读写入口"]
-    R --> C["Client：协调元数据与传输"]
-    C -.-> M["Master：分配、可见性、lease"]
-    C --> T["Transfer Engine：提交与完成"]
-    T --> B["Transport：具体后端"]
+    Q["Client::Query<br/>取本地起点，调用 GetReplicaList"] --> E{"Master: key 存在？"}
+    E -->|否| N1["OBJECT_NOT_FOUND"]
+    E -->|是| V["VisitReplicas(IsReplicaReadable)"]
+    V --> R{"有 COMPLETE 且句柄/端点有效的副本？"}
+    R -->|是| OK["返回可读副本列表与 lease"]
+    R -->|否| A{"所有副本都是 REMOVED？"}
+    A -->|是| N2["OBJECT_NOT_FOUND"]
+    A -->|否| N3["REPLICA_IS_NOT_READY"]
 ```
 
-*图注：这是逻辑阅读层次，不表示每个接口都严格经过全部节点。*
+*图注：四个判断点对应正文四站。`REPLICA_IS_NOT_READY` 只说明"key 存在、没有可读副本、且不是全部 REMOVED"，不区分副本是 `PROCESSING` 还是句柄/端点失效。*
 
-## 追调用链时，只记录三个问题
+## 用测试确认 PROCESSING 这一种情况
 
-第一个问题是：谁作决定？
+`master_service_test.cpp` 里有一个用例覆盖了这条分支：`PutStart` 返回的副本状态是 `PROCESSING`；在调用 `PutEnd` 之前，`GetReplicaList` 返回 `REPLICA_IS_NOT_READY`；`PutEnd` 之后，测试继续执行成功的读取。
 
-例如空间分配、可读状态和读保护，属于元数据与控制逻辑。
+这个用例把状态固定在"分配完成、提交之前"，断言正好落在第三站和第四站之间。它证明的是这一种 `PROCESSING` 场景，不是所有 `REPLICA_IS_NOT_READY` 的来源。阅读用例时先确认它的 setup 和断言，再判断它能否解释手上的现象。
 
-第二个问题是：谁搬数据？
+## 定位时先收集三样证据
 
-找到 Transfer Engine 入口后，再根据需要进入 TCP、RDMA 等后端。
+遇到 `REPLICA_IS_NOT_READY`，只凭错误码无法继续细分。下一步至少要拿到：
 
-第三个问题是：调用方凭什么返回成功？
+1. K 的元数据是否存在；
+2. 各副本的状态是 `PROCESSING`、`COMPLETE` 还是 `REMOVED`；
+3. 副本的内存/NoF 句柄和传输端点是否有效。
 
-这一步最容易被忽略。很多人追到提交函数就停了，但真正的语义藏在等待、检查和错误处理里。
+这三样分别对应第二站、第三站和第四站。只有第一样是"存在"，后两样仍可能让副本不可读。
 
-**入口告诉你做什么，完成条件告诉你做成了什么。**
+下一篇进入传输层。提交一个传输任务之后，调用方还要回答另一个问题：什么时候才能安全释放 batch 和 buffer？
 
-## 不要把接口名字当成全部语义
+**源码延伸：**原系列篇1；`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。版本基线为 `v0.3.13.post1`。
 
-`Put`、`Get`、`submitTransfer` 都是容易理解的名字，但名字不会自动说明：
-
-- 是否覆盖已有内容。
-- 是否等待全部副本。
-- 返回时数据是否可见。
-- 失败后是否仍有工作在执行。
-- 调用方能否马上释放 buffer。
-
-这些问题需要从分支、状态和资源生命周期中找答案。
-
-阅读时可以建立一张简短笔记：输入是什么，改变什么状态，成功条件是什么，失败由谁清理。
-
-## 测试用于验证理解
-
-源码看完后，再去找对应测试。
-
-有价值的验证，不只是“正常 Put/Get 能通过”，还包括未完成副本、过期 lease、部分提交失败和重复操作。
-
-列出测试文件并不等于已经证明结论。应该进一步找到具体用例，确认它覆盖的配置与断言。
-
-还要固定版本。当前 main 能编译通过，不能证明历史 tag 的行为完全相同。
-
-下一篇进入传输层。我们会看到，提交一个任务与真正完成它，中间还隔着一整套生命周期。
-
-**源码延伸：**原系列篇1；`mooncake-integration`、`real_client`、`client_service`、Transfer Engine 接口。版本基线为 `v0.3.13.post1`。
+- [Client::Query](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)
+- [MasterService::GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
+- [PROCESSING 副本的测试用例](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4069)
 
 [源码解析版](../01-source-navigation.md) · [系列目录与排版说明](README.md)
 

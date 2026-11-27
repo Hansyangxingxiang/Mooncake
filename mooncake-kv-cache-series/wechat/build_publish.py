@@ -12,10 +12,11 @@ does not rewrite prose: it only
   * refreshes a 11-entry manifest and index.
 
 Usage:
-    python3 build_publish.py --articles 1,2,3,4 \
+    python3 build_publish.py --articles 1,2,3,4,6,7 \
         --md2wx /path/to/md2wx.py --chrome /usr/bin/google-chrome
 
-Only 01-04 are built in this round; 05-11 stay source-only in the index.
+Articles not selected remain source-only in the index unless prior publish
+artifacts already exist.
 """
 
 from __future__ import annotations
@@ -674,7 +675,7 @@ def render_index(manifest: dict) -> str:
     lines = [
         "# Mooncake KV Cache 微信公众号发布稿",
         "",
-        "本目录由 `wechat/build_publish.py` 生成。已生成的篇目包含 Markdown、内联样式 HTML 与配图 PNG；其余篇目保留源 Markdown。",
+        "本目录由 `wechat/build_publish.py` 生成。已生成的篇目包含本次构建产出的 Markdown、内联样式 HTML 与配图 PNG；其余篇目仅保留源 Markdown，其“配图”列是源稿中的 Mermaid 图数量，尚无对应 PNG。",
         "",
         f"基线：`{BASELINE_TAG}` / `{BASELINE_COMMIT[:7]}`。生成时间：{manifest['generated_at']}。",
         "",
@@ -693,20 +694,24 @@ def render_index(manifest: dict) -> str:
             md_link = f"[MD](./{entry['slug']}.md)"
             html_link = f"[HTML](./{entry['slug']}.html)"
         else:
-            status = "源稿"
+            status = "源稿（未生成 HTML/PNG）"
             md_link = f"[源稿](../{entry['slug']}.md)"
             html_link = "—"
         figures = entry.get("figure_count", len(entry.get("figures", [])))
+        if entry["status"] != "built" and entry["status"] != "image-pending":
+            figures = f"{figures}（源稿 Mermaid，未渲染）"
         lines.append(
             f"| {entry['order']} | {entry['title']} | {status} | {md_link} | {html_link} | {figures} |"
         )
     lines += [
         "",
+        "“已生成”只表示本次构建写出了对应产物并通过脚本校验，不表示已在公众号编辑器或手机宽度下预览。",
+        "",
         "## 构建与校验",
         "",
         "```bash",
         "cd mooncake-kv-cache-series/wechat",
-        "python3 build_publish.py --articles 1,2,3,4 \\",
+        "python3 build_publish.py --articles 1,2,3,4,6,7 \\",
         "  --md2wx /home/yangxx/.claude/skills/producing-tech-blog/scripts/md2wx.py \\",
         "  --chrome /usr/bin/google-chrome --renderer npx",
         "```",

@@ -124,7 +124,7 @@ flowchart TD
 
 ### 片段1：BatchID 的分配与释放（`multi_transport.cpp:93` / `:108`）
 
-`allocateBatchID` 分配一个 `BatchDesc`，**用指针本身当 BatchID**——这是零查找的句柄设计。`freeBatchID` 是**有条件的释放**：只要还有任务没完成，就拒绝：
+`allocateBatchID` 分配一个 `BatchDesc`，**把 `BatchDesc*` 转成 `uint64_t` 当 BatchID**——这是零查找的句柄设计。`freeBatchID` 是**有条件的释放**：只要还有任务没完成，就拒绝：
 
 ```cpp
 // multi_transport.cpp:93  分配 batch，指针即 ID
@@ -153,7 +153,7 @@ Status MultiTransport::freeBatchID(BatchID batch_id) {
 }
 ```
 
-**关键点**：`BatchID` 是 `BatchDesc*` 的别名。`freeBatchID` 返回 `BatchBusy` 而不是静默失败——调用方必须等所有任务 `is_finished` 才能释放，否则会 double-free 或 use-after-free。这是 TE 资源生命周期的核心约束。
+**关键点**：`BatchID` 的类型是 `uint64_t`，其值由 `BatchDesc*` 强转而来；调用方只应把它当不透明句柄。`freeBatchID` 返回 `BatchBusy` 而不是静默失败——调用方必须等所有任务 `is_finished` 才能释放，否则会 double-free 或 use-after-free。这是 TE 资源生命周期的核心约束。
 
 ### 片段2：submitTransfer 拆分与绑定（`multi_transport.cpp:130`）
 
@@ -244,7 +244,7 @@ if (success_slice_count + failed_slice_count == task.slice_count) {
 
 ### BatchBusy：释放被拒绝
 
-`freeBatchID` 遇到未完成任务返回 `BatchBusy`（`multi_transport.cpp:113`）。调用方必须继续轮询 `getTransferStatus` 直到完成，再重试释放。**这是防止 use-after-free 的保护**——BatchID 是裸指针，提前释放会导致悬垂指针。
+`freeBatchID` 遇到未完成任务返回 `BatchBusy`（`multi_transport.cpp:113`）。调用方必须继续轮询 `getTransferStatus` 直到完成，再重试释放。**这是防止 use-after-free 的保护**——BatchID 编码了裸指针，提前释放会让后续按 ID 解引用时访问已释放的 `BatchDesc`。
 
 ### 超时：TIMEOUT 状态
 

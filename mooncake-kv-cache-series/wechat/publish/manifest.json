@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-11-23T09:42:25+00:00",
+  "generated_at": "2026-11-27T04:42:12+00:00",
   "baseline": {
     "tag": "v0.3.13.post1",
     "commit": "719735896c86b56fabec6cf3e825fb2ea640597a"
@@ -11,12 +11,12 @@
       "01-shared-kv-cache",
       "02-objects-and-replicas",
       "03-put-visibility",
-      "04-get-and-lease"
+      "04-get-and-lease",
+      "06-transfer-lifecycle",
+      "07-rdma-data-path"
     ],
     "pending": [
       "05-source-reading",
-      "06-transfer-lifecycle",
-      "07-rdma-data-path",
       "08-multi-nic-numa",
       "09-cache-eviction",
       "10-ssd-tiering",
@@ -68,7 +68,7 @@
       "abstract": "实例 A 算过的前缀 KV 写进共享缓存后，实例 B 怎样找到并读取它？先从两台实例、三个角色看清控制流与数据流。",
       "source": "mooncake-kv-cache-series/wechat/01-shared-kv-cache.md",
       "source_analysis": "../00-architecture-overview.md",
-      "source_sha256": "0cebb592e6d4b7bb8af4bf05856f46e61d0466f1b38e8f73c93f54fd72b69333",
+      "source_sha256": "c9268f849d4b9ef43e941f8b6ff58147465f69e82f274f21840bde954039e1bd",
       "figure_count": 2,
       "status": "built",
       "markdown": "mooncake-kv-cache-series/wechat/publish/01-shared-kv-cache.md",
@@ -78,21 +78,21 @@
         {
           "n": 1,
           "png": "mooncake-kv-cache-series/wechat/publish/images/01-shared-kv-cache-fig1.png",
-          "width": 760,
-          "height": 1088,
-          "sha256": "d8567644efe1418546934c38d0294fd1dc70d1fd78713d402d22ecd081b16b01",
+          "width": 1136,
+          "height": 1136,
+          "sha256": "8dc1d6437bdebef04c68f36ac70bcceed6a69a0873b6e25881d805a7679a7b59",
           "render_status": "ok",
-          "mermaid_sha256": "b483c31b7d460d1894b80c1948708ef45255eb4c33d9ef04242295ea3af02646",
+          "mermaid_sha256": "7bed56185464112d2ea65db57959d4526623b82eb54ba2459b57b4ddb23dff5a",
           "error": null
         },
         {
           "n": 2,
           "png": "mooncake-kv-cache-series/wechat/publish/images/01-shared-kv-cache-fig2.png",
-          "width": 1700,
+          "width": 1738,
           "height": 786,
-          "sha256": "46046e2e12be97766995100c92b088cc222dda7c6295432b9702cd5f651c1143",
+          "sha256": "d3be4d75b2d7ca9f726d73988a666e6b5a4ef4ec5f8932492f3e57a5f9b3f4a0",
           "render_status": "ok",
-          "mermaid_sha256": "51436c1a4684b44c034db40308fffc6e0f71127bc0225d293b26b6d52a775872",
+          "mermaid_sha256": "45b88814f5d5e10e42729c6c1e95519992eccbe34ba024b5a71b195ee9a5e669",
           "error": null
         }
       ],
@@ -100,12 +100,12 @@
         "warnings": [],
         "stats": {
           "headings": 5,
-          "paragraphs": 30,
+          "paragraphs": 32,
           "list_items": 13,
           "code_blocks": 0,
           "tables": 0,
           "images": 2,
-          "words": 1474,
+          "words": 1658,
           "read_minutes": 4
         }
       }
@@ -118,7 +118,7 @@
       "abstract": "key K 在 Master 里变成对象元数据，R1、R2 各占一段内存。对象、副本、Segment、Slice 分别回答什么？",
       "source": "mooncake-kv-cache-series/wechat/02-objects-and-replicas.md",
       "source_analysis": "../04-core-data-structures.md",
-      "source_sha256": "f3b5adc2981484cfa1dd710643cc4f1d455f191050ed95b2f432a695415d3147",
+      "source_sha256": "dc9bbbe689252842237811760960fae4c010983fe9545b9dc27be4d6406c7a2f",
       "figure_count": 2,
       "status": "built",
       "markdown": "mooncake-kv-cache-series/wechat/publish/02-objects-and-replicas.md",
@@ -150,13 +150,13 @@
         "warnings": [],
         "stats": {
           "headings": 5,
-          "paragraphs": 28,
+          "paragraphs": 31,
           "list_items": 11,
           "code_blocks": 0,
           "tables": 0,
           "images": 2,
-          "words": 1389,
-          "read_minutes": 3
+          "words": 1551,
+          "read_minutes": 4
         }
       }
     },
@@ -168,7 +168,7 @@
       "abstract": "A 的字节已经写完，B 仍可能查不到可读副本。数据搬完与副本提交，为什么是两个时刻？",
       "source": "mooncake-kv-cache-series/wechat/03-put-visibility.md",
       "source_analysis": "../02-put-path.md",
-      "source_sha256": "f6c5a7935e8d6827d00f9afa268a534a69a75892d3a29469c83ccea4bf170dcb",
+      "source_sha256": "c6b87cee5561c35e8b20062e1117f685efec206c4f99307044679159d8fab6cf",
       "figure_count": 1,
       "status": "built",
       "markdown": "mooncake-kv-cache-series/wechat/publish/03-put-visibility.md",
@@ -189,14 +189,14 @@
       "md2wx": {
         "warnings": [],
         "stats": {
-          "headings": 8,
-          "paragraphs": 38,
-          "list_items": 20,
+          "headings": 6,
+          "paragraphs": 40,
+          "list_items": 22,
           "code_blocks": 0,
-          "tables": 1,
+          "tables": 2,
           "images": 1,
-          "words": 1755,
-          "read_minutes": 4
+          "words": 2277,
+          "read_minutes": 6
         }
       }
     },
@@ -208,7 +208,7 @@
       "abstract": "B 从 R1 读回了字节，这次 Get 仍可能失败。定位、搬完、可接受，是三个不同时刻。",
       "source": "mooncake-kv-cache-series/wechat/04-get-and-lease.md",
       "source_analysis": "../03-get-path.md",
-      "source_sha256": "80c1b306b46648cc01c6eda4a584a3c4662bee8fe91a93df2425a387f95a8de2",
+      "source_sha256": "6c1a98368557f374f4fbd5170ce7aee58e7c15eca524897810f5d05c3d07ccec",
       "figure_count": 2,
       "status": "built",
       "markdown": "mooncake-kv-cache-series/wechat/publish/04-get-and-lease.md",
@@ -230,9 +230,9 @@
           "png": "mooncake-kv-cache-series/wechat/publish/images/04-get-and-lease-fig2.png",
           "width": 1648,
           "height": 1544,
-          "sha256": "9a080ebcf4729e486b43aec06f283f60c711c94b98257f4efa5f703415fea91d",
+          "sha256": "472a5beb8ed2301bc9879f43711562c1debca5e5452e481064b3b11a29302a01",
           "render_status": "ok",
-          "mermaid_sha256": "c3c114a3bf1e95fe13f322f438b76145897d883bf8d3988634fbc5a183448471",
+          "mermaid_sha256": "d994ecf21e48d2a87891aadfa27d390ee797eab3e5bf26303f1fd7f61452dd91",
           "error": null
         }
       ],
@@ -240,13 +240,13 @@
         "warnings": [],
         "stats": {
           "headings": 4,
-          "paragraphs": 30,
-          "list_items": 18,
+          "paragraphs": 32,
+          "list_items": 22,
           "code_blocks": 0,
-          "tables": 1,
+          "tables": 2,
           "images": 2,
-          "words": 1614,
-          "read_minutes": 4
+          "words": 2140,
+          "read_minutes": 5
         }
       }
     },
@@ -254,11 +254,11 @@
       "order": 5,
       "id": "05",
       "slug": "05-source-reading",
-      "title": "第5篇｜读 Mooncake 源码，从哪里开始才不容易迷路？",
-      "abstract": "沿着一次请求读代码，通常比从目录第一页开始读更有效。关键是找到入口、控制决策和完成条件。",
+      "title": "第5篇｜K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？",
+      "abstract": "同一个错误码可能来自不同分支。沿着 B 的一次查询走四站，看每一站能排除什么、下一步该查什么。",
       "source": "mooncake-kv-cache-series/wechat/05-source-reading.md",
       "source_analysis": "../01-source-navigation.md",
-      "source_sha256": "d6b91c622eb4a6268db35ce6dc4c2290153b905f8e280cceddb86616f819b988",
+      "source_sha256": "e83184b64c9ac451c84c8c2ed1960bfc3ef73e063cb129a3e6f2e10c80781431",
       "figure_count": 1,
       "status": "source-only",
       "markdown": null,
@@ -275,19 +275,49 @@
       "id": "06",
       "slug": "06-transfer-lifecycle",
       "title": "第6篇｜Transfer Engine 返回成功，数据就传完了吗？",
-      "abstract": "分配、提交、观察完成、释放，是四个不同动作。部分提交失败尤其考验调用方的资源管理。",
+      "abstract": "一个 batch 跨两个后端提交，第一个后端已接收，第二个提交失败。哪些工作还在进行？调用方最早什么时候能释放资源？",
       "source": "mooncake-kv-cache-series/wechat/06-transfer-lifecycle.md",
       "source_analysis": "../05-transfer-engine-task-lifecycle.md",
-      "source_sha256": "cb0ee5f953832064a326b0631588e62c4690a93d105782fd57dcdf9e18aea29f",
+      "source_sha256": "63b3e3b4f7db12d046d75570844f874340097d4f739fb674ece52674f40dd69a",
       "figure_count": 2,
-      "status": "source-only",
-      "markdown": null,
-      "html": null,
-      "report": null,
-      "figures": [],
+      "status": "built",
+      "markdown": "mooncake-kv-cache-series/wechat/publish/06-transfer-lifecycle.md",
+      "html": "mooncake-kv-cache-series/wechat/publish/06-transfer-lifecycle.html",
+      "report": "mooncake-kv-cache-series/wechat/publish/06-transfer-lifecycle.report.json",
+      "figures": [
+        {
+          "n": 1,
+          "png": "mooncake-kv-cache-series/wechat/publish/images/06-transfer-lifecycle-fig1.png",
+          "width": 682,
+          "height": 956,
+          "sha256": "729e95b275b2c63b8a689395ff80cd9a5bdfa00245f9d964bb80867d8fca421f",
+          "render_status": "ok",
+          "mermaid_sha256": "1c6b45e5f4f4cd7517ee41c0dbbb1f9329b07d3d81027fd0008f15594da0c0ff",
+          "error": null
+        },
+        {
+          "n": 2,
+          "png": "mooncake-kv-cache-series/wechat/publish/images/06-transfer-lifecycle-fig2.png",
+          "width": 1006,
+          "height": 1734,
+          "sha256": "0077a9770126587cda169a81393fe8b148324210e2df8349953c5ea7e2ac90ad",
+          "render_status": "ok",
+          "mermaid_sha256": "1dd2c81dc625e04ec0fc36f9c941d65b8a8c7b91491eddc8c6a1b4aaeaef3f74",
+          "error": null
+        }
+      ],
       "md2wx": {
         "warnings": [],
-        "stats": {}
+        "stats": {
+          "headings": 6,
+          "paragraphs": 26,
+          "list_items": 10,
+          "code_blocks": 0,
+          "tables": 0,
+          "images": 2,
+          "words": 1616,
+          "read_minutes": 4
+        }
       }
     },
     {
@@ -295,30 +325,50 @@
       "id": "07",
       "slug": "07-rdma-data-path",
       "title": "第7篇｜一次 RDMA 传输，究竟经历了什么？",
-      "abstract": "从内存注册到完成队列，串起 RDMA 数据路径，并区分连接建立、请求提交和传输完成。",
+      "abstract": "A 把主机内存里的 KV 写到远端 R1。沿着一次 WRITE 看源 buffer、目标 buffer、WR 提交与本地完成观察。",
       "source": "mooncake-kv-cache-series/wechat/07-rdma-data-path.md",
       "source_analysis": "../06-rdma-data-path.md",
-      "source_sha256": "26084bde2118bfcade159a218174664be4f619442d4ba2597026d68297538234",
+      "source_sha256": "b988a232e7dad000355fa142cc851a78bea4af1a752e73324eee0382884fa089",
       "figure_count": 1,
-      "status": "source-only",
-      "markdown": null,
-      "html": null,
-      "report": null,
-      "figures": [],
+      "status": "built",
+      "markdown": "mooncake-kv-cache-series/wechat/publish/07-rdma-data-path.md",
+      "html": "mooncake-kv-cache-series/wechat/publish/07-rdma-data-path.html",
+      "report": "mooncake-kv-cache-series/wechat/publish/07-rdma-data-path.report.json",
+      "figures": [
+        {
+          "n": 1,
+          "png": "mooncake-kv-cache-series/wechat/publish/images/07-rdma-data-path-fig1.png",
+          "width": 2202,
+          "height": 1316,
+          "sha256": "f44aaddbaa1cbe7240f593a1d5644c70378c706de67fd7948f3ace9bc6bdfa07",
+          "render_status": "ok",
+          "mermaid_sha256": "f185b6facd2120651dc4b7d77024ea79e92e23e4b2b7407d307608bb0dfa448d",
+          "error": null
+        }
+      ],
       "md2wx": {
         "warnings": [],
-        "stats": {}
+        "stats": {
+          "headings": 6,
+          "paragraphs": 27,
+          "list_items": 7,
+          "code_blocks": 0,
+          "tables": 0,
+          "images": 1,
+          "words": 1505,
+          "read_minutes": 4
+        }
       }
     },
     {
       "order": 8,
       "id": "08",
       "slug": "08-multi-nic-numa",
-      "title": "第8篇｜网卡越多就越快？Mooncake 如何面对 NUMA 和多网卡",
-      "abstract": "带宽不仅取决于有多少张网卡，还取决于内存在哪里、哪张网卡可以访问，以及故障后是否有可替代路径。",
+      "title": "第8篇｜源内存在 NUMA 0，两张网卡分属两个 NUMA：这次 RDMA 走哪张？",
+      "abstract": "拓扑上更近、当下可选、实际使用，是三个不同答案。用一台双 NUMA、双网卡的主机跟一次传输，再设计一组可控制的实验。",
       "source": "mooncake-kv-cache-series/wechat/08-multi-nic-numa.md",
       "source_analysis": "../07-multi-nic-numa.md",
-      "source_sha256": "faa16cf047aac10060d6dae95bc7043eedae3ef407c488e56bd8dd8047287c48",
+      "source_sha256": "ee9baa2ffb9596b518090dc29aec4c64ff27cf049d6afb997f228428e1c195a8",
       "figure_count": 2,
       "status": "source-only",
       "markdown": null,
@@ -334,11 +384,11 @@
       "order": 9,
       "id": "09",
       "slug": "09-cache-eviction",
-      "title": "第9篇｜缓存满了，哪些对象能删？理解 Lease、Pin 与淘汰",
-      "abstract": "淘汰不是简单找出最老对象。读保护、在途任务和副本介质，都影响最终能回收多少空间。",
+      "title": "第9篇｜缓存满了，K 刚被读到，淘汰线程为什么删不掉它？",
+      "abstract": "淘汰线程先扫描出候选，读方随后查询 K 并拿到 lease，真正驱逐前还要重检。lease、hard pin、soft pin、后台引用各保护什么？",
       "source": "mooncake-kv-cache-series/wechat/09-cache-eviction.md",
       "source_analysis": "../08-cache-lifecycle.md",
-      "source_sha256": "643a2ab69a1638ddc0245be03f38d066c2340e5863281be6756a1d7480ca59d0",
+      "source_sha256": "aa494acb99eb256be907c2141938e2aec7b6ee18812fd1a4dc6fa38376d249a3",
       "figure_count": 1,
       "status": "source-only",
       "markdown": null,
@@ -354,11 +404,11 @@
       "order": 10,
       "id": "10",
       "slug": "10-ssd-tiering",
-      "title": "第10篇｜写进 SSD 就安全了吗？Mooncake 分层缓存的三个完成点",
-      "abstract": "文件写完、本地可读、Master 可路由，是三个不同阶段。SSD 分层不仅是换一种介质，还引入了提交与恢复问题。",
+      "title": "第10篇｜文件与本地索引都好了，通知 Master 失败会怎样？",
+      "abstract": "数据文件、本地索引、Master 注册，是三个不同层次。通知返回错误时，先分清\"确定没执行\"与\"可能执行了但响应丢了\"。",
       "source": "mooncake-kv-cache-series/wechat/10-ssd-tiering.md",
       "source_analysis": "../09-ssd-tiering.md",
-      "source_sha256": "fcf39912758d59810f6d8556ee4ceba6105310cdaa9a319bf2a0b935a60f98fa",
+      "source_sha256": "9cfef63858bd1866812100c56d52a7462e827cf8a2b59ddbc1ef6959eb92bd5f",
       "figure_count": 2,
       "status": "source-only",
       "markdown": null,
@@ -375,10 +425,10 @@
       "id": "11",
       "slug": "11-kv-reuse-and-inference",
       "title": "第11篇｜共享了 KV Cache，为什么推理不一定更快？",
-      "abstract": "共享存储提供复用能力，是否减少 Prefill、降低 TTFT，还取决于 key 兼容、加载成本和推理框架的调度。",
+      "abstract": "A 写入的 1,024 token 前缀，B 能命中。B 什么时候拿到首个 token，取决于加载、同步和调度，而不只取决于\"命中\"。",
       "source": "mooncake-kv-cache-series/wechat/11-kv-reuse-and-inference.md",
       "source_analysis": "../10-vllm-integration.md",
-      "source_sha256": "22a303208057087b333db21c17838f274372710a3630478d0d7e4cd12ec9e046",
+      "source_sha256": "ec9790f67d4034481315fa7aad3da838b2cc611ec46073dd5535c6ca6570bb6a",
       "figure_count": 1,
       "status": "source-only",
       "markdown": null,

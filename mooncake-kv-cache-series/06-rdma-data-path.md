@@ -66,10 +66,12 @@ is_finished = true → freeBatchID 可释放
 
 ```mermaid
 sequenceDiagram
-    participant A as 本地 TE
+    participant B as 远端 TE（准备阶段）
     participant M as 连接元数据 / 握手机制
-    participant B as 远端 TE
-    participant N as RNIC
+    participant A as 本地 TE
+    participant N as 本地 RNIC
+    participant RN as 远端 RNIC
+    participant RM as 远端已注册内存
     A->>A: 注册本地内存，获得本地访问凭据
     B->>B: 注册远端内存，生成远端访问描述
     B->>M: 发布或交换 segment 与连接信息
@@ -78,12 +80,13 @@ sequenceDiagram
     A->>B: QP 握手与连接参数交换
     Note over A,B: 数据操作前完成所需 QP 状态转换；连接可复用
     A->>N: post WR：地址、长度与访问凭据
-    N->>B: RDMA READ / WRITE 数据操作
+    N->>RN: RDMA READ / WRITE 搬运字节（网卡数据方向）
+    RN->>RM: DMA 访问已注册目标内存
     N-->>A: 本地 CQE
     A->>A: 后台轮询 CQ，更新 slice 完成状态
 ```
 
-握手机制可能来自独立元数据服务或直接握手配置，图中合并为一个逻辑角色。CQE 是传输完成证据，不是 Store 对象可见性的提交；PutEnd 仍由 Store 层负责。
+准备阶段由两端 TE 参与；数据阶段只有两端 RNIC 搬运字节，远端 TE 软件不逐次接收 WRITE 数据。CQE 由本地 TE 观察，是传输完成证据，不是 Store 对象可见性的提交；PutEnd 仍由 Store 层负责。
 
 ### 6.3.2 队列流水线：背压与错误走不同出口
 

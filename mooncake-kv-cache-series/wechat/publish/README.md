@@ -1,8 +1,8 @@
 # Mooncake KV Cache 微信公众号发布稿
 
-本目录由 `wechat/build_publish.py` 生成。已生成的篇目包含 Markdown、内联样式 HTML 与配图 PNG；其余篇目保留源 Markdown。
+本目录由 `wechat/build_publish.py` 生成。已生成的篇目包含本次构建产出的 Markdown、内联样式 HTML 与配图 PNG；其余篇目仅保留源 Markdown，其“配图”列是源稿中的 Mermaid 图数量，尚无对应 PNG。
 
-基线：`v0.3.13.post1` / `7197358`。生成时间：2026-11-23T09:42:25+00:00。
+基线：`v0.3.13.post1` / `7197358`。生成时间：2026-11-27T04:42:12+00:00。
 
 ## 系列目录（11 篇）
 
@@ -12,19 +12,21 @@
 | 2 | 第2篇｜一个 KV Cache 对象，在 Mooncake 里到底怎么放？ | 已生成 | [MD](./02-objects-and-replicas.md) | [HTML](./02-objects-and-replicas.html) | 2 |
 | 3 | 第3篇｜字节已经写完，为什么另一个 Client 还读不到？ | 已生成 | [MD](./03-put-visibility.md) | [HTML](./03-put-visibility.html) | 1 |
 | 4 | 第4篇｜字节读回来了，这次 Get 为什么还可能失败？ | 已生成 | [MD](./04-get-and-lease.md) | [HTML](./04-get-and-lease.html) | 2 |
-| 5 | 第5篇｜读 Mooncake 源码，从哪里开始才不容易迷路？ | 源稿 | [源稿](../05-source-reading.md) | — | 1 |
-| 6 | 第6篇｜Transfer Engine 返回成功，数据就传完了吗？ | 源稿 | [源稿](../06-transfer-lifecycle.md) | — | 2 |
-| 7 | 第7篇｜一次 RDMA 传输，究竟经历了什么？ | 源稿 | [源稿](../07-rdma-data-path.md) | — | 1 |
-| 8 | 第8篇｜网卡越多就越快？Mooncake 如何面对 NUMA 和多网卡 | 源稿 | [源稿](../08-multi-nic-numa.md) | — | 2 |
-| 9 | 第9篇｜缓存满了，哪些对象能删？理解 Lease、Pin 与淘汰 | 源稿 | [源稿](../09-cache-eviction.md) | — | 1 |
-| 10 | 第10篇｜写进 SSD 就安全了吗？Mooncake 分层缓存的三个完成点 | 源稿 | [源稿](../10-ssd-tiering.md) | — | 2 |
-| 11 | 第11篇｜共享了 KV Cache，为什么推理不一定更快？ | 源稿 | [源稿](../11-kv-reuse-and-inference.md) | — | 1 |
+| 5 | 第5篇｜K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？ | 源稿（未生成 HTML/PNG） | [源稿](../05-source-reading.md) | — | 1（源稿 Mermaid，未渲染） |
+| 6 | 第6篇｜Transfer Engine 返回成功，数据就传完了吗？ | 已生成 | [MD](./06-transfer-lifecycle.md) | [HTML](./06-transfer-lifecycle.html) | 2 |
+| 7 | 第7篇｜一次 RDMA 传输，究竟经历了什么？ | 已生成 | [MD](./07-rdma-data-path.md) | [HTML](./07-rdma-data-path.html) | 1 |
+| 8 | 第8篇｜源内存在 NUMA 0，两张网卡分属两个 NUMA：这次 RDMA 走哪张？ | 源稿（未生成 HTML/PNG） | [源稿](../08-multi-nic-numa.md) | — | 2（源稿 Mermaid，未渲染） |
+| 9 | 第9篇｜缓存满了，K 刚被读到，淘汰线程为什么删不掉它？ | 源稿（未生成 HTML/PNG） | [源稿](../09-cache-eviction.md) | — | 1（源稿 Mermaid，未渲染） |
+| 10 | 第10篇｜文件与本地索引都好了，通知 Master 失败会怎样？ | 源稿（未生成 HTML/PNG） | [源稿](../10-ssd-tiering.md) | — | 2（源稿 Mermaid，未渲染） |
+| 11 | 第11篇｜共享了 KV Cache，为什么推理不一定更快？ | 源稿（未生成 HTML/PNG） | [源稿](../11-kv-reuse-and-inference.md) | — | 1（源稿 Mermaid，未渲染） |
+
+“已生成”只表示本次构建写出了对应产物并通过脚本校验，不表示已在公众号编辑器或手机宽度下预览。
 
 ## 构建与校验
 
 ```bash
 cd mooncake-kv-cache-series/wechat
-python3 build_publish.py --articles 1,2,3,4 \
+python3 build_publish.py --articles 1,2,3,4,6,7 \
   --md2wx /home/yangxx/.claude/skills/producing-tech-blog/scripts/md2wx.py \
   --chrome /usr/bin/google-chrome --renderer npx
 ```

@@ -22,7 +22,9 @@
 
 接下来，A 通过 Transfer Engine 把切片写到目标副本。传输返回成功，只说明字节到了远端内存段，**不说明这份副本可以被读**。
 
-真正打开可见性的是 `PutEnd`。Master 把目标副本从 `PROCESSING` 翻成 `COMPLETE`，`Client::Put` 才返回成功。
+真正打开可见性的是 `PutEnd`。Master 把目标副本从 `PROCESSING` 翻成 `COMPLETE`。这是首次写入的正常路径：传输完成、`PutEnd` 成功，`Client::Put` 才返回成功。
+
+同 key 已存在时还有另一条路径：`PutStart` 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 在传输开始前就把它当成功返回。本文后面会把这两条路径分开。
 
 *配图1：A 写入、B 两次查询的时序。*
 
@@ -47,6 +49,15 @@ sequenceDiagram
 
 *图注：这是普通成功路径。数据流只发生在 A 与 R1 之间；指向 Master 的箭头只表示申请、查询或提交。B 第二次拿到的是读取候选，后续读取仍可能失败。*
 
+把这条路径压成四个时刻：
+
+1. A 从 Master 拿到 R1，状态 `PROCESSING`；
+2. A 把字节写到 R1；
+3. Master 接受 `PutEnd`，R1 变成 `COMPLETE`；
+4. B 查询 K，拿到可读副本描述。
+
+B 在第 3 步之前查询，看到的是"对象存在，但没有可读副本"；在第 3 步之后查询，才可能拿到 R1。
+
 ## 可读副本是过滤出来的
 
 B 第一次查询时，对象其实已经存在——`PutStart` 就把它插进了元数据表。但 Master 返回的不是"对象不存在"，而是 `REPLICA_IS_NOT_READY`。
@@ -68,7 +79,47 @@ B 第一次查询时，对象其实已经存在——`PutStart` 就把它插进�
 
 **分析：**这两个错误码的区别，直接决定上层该不该重试。把 `REPLICA_IS_NOT_READY` 当成对象不存在而放弃，会错过马上就能读到的数据。
 
-## 失败时，提交与撤销如何分工
+## 同 key 再写：已有状态决定返回值与可见性
+
+普通 Put 遇到已存在的 key，判断发生在 `PutStart`。只要已有 `COMPLETE` 副本，或者仍在 discard 超时内，Master 就返回 `OBJECT_ALREADY_EXISTS`。`Client::Put` 对这个错误直接返回成功，不再进入后续的数据传输。
+
+这个提前返回有两种常见来源，写方看到的结果相似，读方看到的状态却不同。
+
+### 上次 PutEnd 已执行，响应丢失
+
+第一次写入的 `PutEnd` 已经在 Master 执行，响应却在返回途中丢失。对 A 来说，这次调用超时；对 Master 来说，R1 已经是 `COMPLETE`。
+
+A 重试同一个 key 的 Put。`PutStart` 发现已有 `COMPLETE` 副本，返回 `OBJECT_ALREADY_EXISTS`；`Client::Put` 把它当成功返回。这次重试传入的 buffer 不参与传输，已有内容也不变。
+
+B 此时查询 K，能拿到 R1 的描述。A 看到的"重试成功"表示"对象已存在"，不是"这次覆盖写成功"。
+
+### 上次写入仍停在 PROCESSING
+
+第一个写方完成 `PutStart` 后停住，没有执行 `PutEnd` 或 `PutRevoke`。Master 里 K 仍然存在，R1 停在 `PROCESSING`。
+
+在 discard 窗口内，另一个写方对 K 发起 Put：`PutStart` 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 同样当成功返回。第二个写方传入的 buffer 不会写入，R1 仍不可读。B 查询 K，得到的是 `REPLICA_IS_NOT_READY`。
+
+超过 discard 窗口后，新的 `PutStart` 才能顶替旧对象，并重新分配副本。旧副本先移入 `discarded_replicas_`，等到 release 超时才真正释放。顶替不是复用旧空间。
+
+| 已有状态 | 写方返回 | 本次 buffer 是否写入 | 读方可见结果 |
+|---|---|---|---|
+| 无对象（首次写入正常路径） | `PutStart` 返回副本描述；传输后 `PutEnd` 成功，`Client::Put` 返回成功 | 是 | `PutEnd` 前 `REPLICA_IS_NOT_READY`；之后返回副本描述 |
+| 已有 `COMPLETE` 副本（含 `PutEnd` 成功但响应丢失） | `OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功 | 否，已有内容不变 | 返回副本描述 |
+| `PROCESSING`，未超过 discard（默认 30 秒） | `OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功 | 否，原 `PROCESSING` 仍不可读 | `REPLICA_IS_NOT_READY` |
+| `PROCESSING`，超过 discard（默认 30 秒） | `PutStart` 顶替并返回新副本描述；传输后 `PutEnd` 成功则返回成功 | 是，写入新分配的副本；旧副本进入 `discarded_replicas_` | 新 `PutEnd` 前 `REPLICA_IS_NOT_READY`；之后返回新副本描述 |
+
+两个超时都从 `PutStart` 写入的 `metadata.put_start_time` 起算：
+
+| 参数 | 默认 | 触发后发生什么 |
+|---|---|---|
+| `put_start_discard_timeout_sec` | 30 秒 | 超时前，同 key 的新 `PutStart` 返回 `OBJECT_ALREADY_EXISTS`；超时后，新 `PutStart` 才能顶替旧对象 |
+| `put_start_release_timeout_sec` | 600 秒 | 旧 `PROCESSING` 副本被顶替后先移入 `discarded_replicas_`，到 `put_start_time + 600 秒` 才真正释放 |
+
+提前返回的路径不会调用 `TransferWrite`；若启用 object checksum，本地仍可能计算一次校验值，但它不会写入共享副本。
+
+这些分支只改变成功时分配哪些副本，不改变"key 已存在"的判断。覆盖语义属于 `Upsert`：它会按已有对象的情况走不同分支，包括同尺寸更新和不同尺寸的丢弃后重分配。把 Put 重试当成覆盖写，是这里最容易犯的错。
+
+## 提交决策：默认全部成功，双副本可降级
 
 空间申请成功，后续传输仍可能失败。客户端不能把所有申请过的位置都标记为成功，也不能把已完成的一侧一起撤销。
 
@@ -92,54 +143,14 @@ B 第一次查询时，对象其实已经存在——`PutStart` 就把它插进�
 
 `PutRevoke` 本身也有限制：它只撤销仍处于 `PROCESSING` 的目标副本。如果目标类别里已经有非 `PROCESSING` 的副本（例如 `COMPLETE`），Master 返回 `INVALID_WRITE`，而不是误删已完成的数据。这正好要求调用方"提交成功的那一类，撤销失败的那一类"。
 
-## 三种异常
-
-### 传输失败
-
-按上一节的提交条件处理：能提交的提交，不能提交的撤销，最终是否成功由 `DetermineFinalizeDecision` 决定。不要笼统地说"Put 失败了"，要区分是空间不足、部分副本失败，还是全部失败。
-
-### Client 在提交前退出
-
-A 完成了 `PutStart`，却在 `PutEnd` 或 `PutRevoke` 之前崩溃。对象停在 `PROCESSING`，既不可读，也挡住后续同 key 写入。
-
-Master 用两个超时收尾：
-
-| 参数 | 默认 | 作用 |
-|---|---|---|
-| `put_start_discard_timeout_sec` | 30 秒 | 超时后允许同 key 的新 `PutStart` 顶替旧对象 |
-| `put_start_release_timeout_sec` | 600 秒 | 超时后旧对象占用的空间才可被回收 |
-
-**关键细节**：顶替不是复用旧空间，而是重新分配。旧的 `PROCESSING` 副本被移入 `discarded_replicas_`，等第二个超时到期后才释放。所以客户端消失后，资源不会立刻恢复，30 秒内它仍是故障源。
-
-### Master 已接受 PutEnd，但响应丢失
-
-A 发出 `PutEnd`，Master 执行成功，响应却在网络中丢失。
-
-对 A 来说，这次调用超时了；对 Master 来说，对象已经 `COMPLETE`。
-
-**超时只能说明客户端没拿到结果，不能证明服务端没有执行。**
-
-此时如果 A 重试同一个 key 的 Put：`PutStart` 发现已有 `COMPLETE` 副本，返回 `OBJECT_ALREADY_EXISTS`；`Client::Put` 把这个错误当成功返回，已有内容不变。
-
-这带来一个必须理解的结果：重试是幂等的，但不是覆盖。
-
-## 同 key 再写：重试、幂等与覆盖
-
-普通 Put 遇到已存在的 key，语义是"保留已有内容 + 幂等成功"，不是"用新数据替换旧数据"。
-
-- 已有 `COMPLETE` 副本：`OBJECT_ALREADY_EXISTS`，`Client::Put` 返回成功，内容不变。
-- 仍是 `PROCESSING` 且未超过 discard 超时：同样返回 `OBJECT_ALREADY_EXISTS`。
-- 超过 discard 超时：允许新 `PutStart` 顶替，重新分配空间。
-
-如果业务需要替换内容，应使用 `Upsert`，并核对它在并发写入下的语义。把 Put 重试当成覆盖写，是这里最容易犯的错。
-
 字节已经写完，B 也终于从 R1 读回了数据。但读回来的字节，这次 Get 为什么还可能失败？
 
-**源码延伸：**原系列篇2；`Client::Put`、`PutStart`、`PutEnd`、`PutRevoke`、`IsReplicaReadable`。版本基线为 `v0.3.13.post1`。
+**源码延伸：**原系列篇2；`Client::Put`、`PutStart`、`PutEnd`、`PutRevoke`、`GetReplicaList`、`IsReplicaReadable`。版本基线为 `v0.3.13.post1`。
 
-- [Client::Put](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1853)
+- [Client::Put](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1853) · [对已存在 key 的提前返回](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1887)
 - [PutStart](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L4292) · [PutEnd](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L4509) · [PutRevoke](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L4776)
-- [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
+- [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
+- [discard / release 超时默认值](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/types.h#L119)
 
 [源码解析版](../02-put-path.md) · [系列目录与排版说明](README.md)
 

@@ -12,12 +12,12 @@
 | 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) | [篇4：核心数据结构](../04-core-data-structures.md) |
 | 3 | [字节已经写完，为什么另一个 Client 还读不到？](03-put-visibility.md) | [篇2：Put 路径](../02-put-path.md) |
 | 4 | [字节读回来了，这次 Get 为什么还可能失败？](04-get-and-lease.md) | [篇3：Get 路径](../03-get-path.md) |
-| 5 | [读 Mooncake 源码，从哪里开始才不容易迷路？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
+| 5 | [K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
 | 6 | [Transfer Engine 返回成功，数据就传完了吗？](06-transfer-lifecycle.md) | [篇5：TE 生命周期](../05-transfer-engine-task-lifecycle.md) |
 | 7 | [一次 RDMA 传输，究竟经历了什么？](07-rdma-data-path.md) | [篇6：RDMA 数据路径](../06-rdma-data-path.md) |
-| 8 | [网卡越多就越快？Mooncake 如何面对 NUMA 和多网卡](08-multi-nic-numa.md) | [篇7：多网卡与 NUMA](../07-multi-nic-numa.md) |
-| 9 | [缓存满了，哪些对象能删？理解 Lease、Pin 与淘汰](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
-| 10 | [写进 SSD 就安全了吗？Mooncake 分层缓存的三个完成点](10-ssd-tiering.md) | [篇9：SSD 分层](../09-ssd-tiering.md) |
+| 8 | [源内存在 NUMA 0，两张网卡分属两个 NUMA：这次 RDMA 走哪张？](08-multi-nic-numa.md) | [篇7：多网卡与 NUMA](../07-multi-nic-numa.md) |
+| 9 | [缓存满了，K 刚被读到，淘汰线程为什么删不掉它？](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
+| 10 | [文件与本地索引都好了，通知 Master 失败会怎样？](10-ssd-tiering.md) | [篇9：SSD 分层](../09-ssd-tiering.md) |
 | 11 | [共享了 KV Cache，为什么推理不一定更快？](11-kv-reuse-and-inference.md) | [篇10：vLLM 集成](../10-vllm-integration.md) |
 
 ## 公众号排版
@@ -37,12 +37,12 @@
 
 “配图”说明用于标识插图位置；发布时用导出的图片替换代码块，并保留有解释作用的图注。原理图不表达未经验证的性能倍数。
 
-第 1–4 篇已由 `build_publish.py` 生成 `publish/` 目录下的发布稿 Markdown、内联 CSS HTML 与 PNG；第 5–11 篇仍为源稿，尚未生成对应产物。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
+第 1–4 篇以及第 6–7 篇已由 `build_publish.py` 在本次构建中生成 `publish/` 目录下的发布稿 Markdown、内联 CSS HTML 与 PNG；第 5 篇与第 8–11 篇仍为源稿，尚未生成对应产物。本次只完成脚本校验，未在公众号编辑器或手机宽度下预览。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
 
 ## 版本与证据边界
 
 Mooncake 基线为原系列采用的 `v0.3.13.post1`，不是对当前 main 的逐行行为承诺。详细的历史行号和源码入口保留在源码解析版；本次稿件整理未新增历史版本构建、硬件测试或端到端验证。
 
-第11篇限于共享 KV 存储与推理复用的职责和成本模型，未固定并验证 vLLM commit。具体 connector 的接口调用、调度通知、布局转换、失败重试与重算行为，仍应按对应版本复核。
+第11篇限于共享 KV 存储与推理复用的职责、成本模型与实验设计，未固定并验证 vLLM commit。具体 connector 的接口调用、调度通知、布局转换、失败重试与重算行为，仍应按对应版本复核。
 
 引用性能数据时补齐硬件、模型、负载、命中长度、并发与版本；不要从单一带宽数字推导端到端 TTFT 收益。

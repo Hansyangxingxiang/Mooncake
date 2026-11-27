@@ -9,14 +9,14 @@
     "code_bg": "#F4F6F8"
   },
   "stats": {
-    "headings": 8,
-    "paragraphs": 38,
-    "list_items": 20,
+    "headings": 6,
+    "paragraphs": 40,
+    "list_items": 22,
     "code_blocks": 0,
-    "tables": 1,
+    "tables": 2,
     "images": 1,
-    "words": 1755,
-    "read_minutes": 4
+    "words": 2277,
+    "read_minutes": 6
   },
   "warnings": []
 }
