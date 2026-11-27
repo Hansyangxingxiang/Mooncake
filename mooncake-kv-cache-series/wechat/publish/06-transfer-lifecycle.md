@@ -2,7 +2,7 @@
 
 **摘要：**一个 batch 跨两个后端提交，第一个后端已接收，第二个提交失败。哪些工作还在进行？调用方最早什么时候能释放资源？
 
-调用一次传输接口，收到成功返回，随后释放源 buffer。
+在 Mooncake 里，调用一次 Transfer Engine 的传输接口，收到成功返回，随后释放源 buffer。
 
 这段逻辑看起来很自然，但如果接口采用异步执行，它就可能过早释放仍被后端使用的数据。
 
@@ -95,6 +95,6 @@
 - [MultiTransport::submitTransfer](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L130) · [MultiTransport::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L108)
 - [MultiTransport::getBatchTransferStatus](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L363)
 
-[源码解析版](../../05-transfer-engine-task-lifecycle.md) · [系列目录与排版说明](index.html)
+[源码解析版](../../05-transfer-engine-task-lifecycle.md) · [系列目录与排版说明](README.md)
 
-[上一篇](05-source-reading.html) · [下一篇](07-rdma-data-path.html)
+[上一篇](05-source-reading.md) · [下一篇](07-rdma-data-path.md)

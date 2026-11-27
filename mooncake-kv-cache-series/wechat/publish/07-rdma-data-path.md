@@ -1,10 +1,10 @@
 # 第7篇｜一次 RDMA 传输，究竟经历了什么？
 
-**摘要：**A 把主机内存里的 KV 写到远端 R1。沿着一次 WRITE 看源 buffer、目标 buffer、WR 提交与本地完成观察。
+**摘要：**推理实例 A 把主机内存里的 KV 写到远端 R1。沿着一次 WRITE 看源 buffer、目标 buffer、WR 提交与本地完成观察。
 
-A 算完一段前缀 KV，准备把它写入 R1。源数据在 A 的主机内存里，目标 R1 在另一台机器的 Store Segment 中，两端都通过 RDMA 访问。
+推理实例 A（下文简称实例 A）算完一段前缀 KV，准备把它写入 R1。R1 是这次写入在远端 Store Segment 中分配到的副本区间。源数据在 A 的主机内存里，目标 R1 在另一台机器，两端都通过 RDMA 访问。
 
-这一篇只跟这一条主机内存到远端已注册内存的 WRITE 路径，回答四个问题：源和目标的 buffer 在哪里，哪些准备可以复用，谁提交这次搬运，谁观察本地完成。
+这一篇只跟这一条从主机内存到远端已注册内存的 WRITE 路径。它回答四个问题：源和目标的 buffer 在哪里，哪些准备可以复用，谁提交这次搬运，谁观察本地完成。
 
 ## 源 buffer 和目标 buffer 在哪里
 
@@ -81,6 +81,6 @@ CQE 成功只证明本地完成，不证明 Store 可见；要让读方查到副
 - [RdmaEndPoint::submitPostSend](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_endpoint.cpp#L915) · [IBV_WR_RDMA_WRITE / IBV_SEND_SIGNALED](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_endpoint.cpp#L972)
 - [WorkerPool CQ poll](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L599) · [Slice::markSuccess / markFailed](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transport/transport.h#L206)
 
-[源码解析版](../../06-rdma-data-path.md) · [系列目录与排版说明](index.html)
+[源码解析版](../../06-rdma-data-path.md) · [系列目录与排版说明](README.md)
 
-[上一篇](06-transfer-lifecycle.html) · [下一篇](08-multi-nic-numa.html)
+[上一篇](06-transfer-lifecycle.md) · [下一篇](08-multi-nic-numa.md)

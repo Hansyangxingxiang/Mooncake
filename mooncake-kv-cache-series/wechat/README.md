@@ -10,13 +10,13 @@
 |---|---|---|
 | 1 | [同样的 1,024 个前缀 token，第二台推理实例还要再算一遍吗？](01-shared-kv-cache.md) | [篇0：架构总览](../00-architecture-overview.md) |
 | 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) | [篇4：核心数据结构](../04-core-data-structures.md) |
-| 3 | [字节已经写完，为什么另一个 Client 还读不到？](03-put-visibility.md) | [篇2：Put 路径](../02-put-path.md) |
-| 4 | [字节读回来了，这次 Get 为什么还可能失败？](04-get-and-lease.md) | [篇3：Get 路径](../03-get-path.md) |
+| 3 | [Mooncake 里 KV Cache 字节已经写完，为什么另一个 Client 还读不到？](03-put-visibility.md) | [篇2：Put 路径](../02-put-path.md) |
+| 4 | [Mooncake 里 KV Cache 字节读回来了，这次 Get 为什么还可能失败？](04-get-and-lease.md) | [篇3：Get 路径](../03-get-path.md) |
 | 5 | [Mooncake 里 key 明明存在，为什么还是读不到副本？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
 | 6 | [Transfer Engine 返回成功，数据就传完了吗？](06-transfer-lifecycle.md) | [篇5：TE 生命周期](../05-transfer-engine-task-lifecycle.md) |
 | 7 | [一次 RDMA 传输，究竟经历了什么？](07-rdma-data-path.md) | [篇6：RDMA 数据路径](../06-rdma-data-path.md) |
 | 8 | [双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？](08-multi-nic-numa.md) | [篇7：多网卡与 NUMA](../07-multi-nic-numa.md) |
-| 9 | [缓存满了，K 刚被读到，淘汰线程为什么删不掉它？](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
+| 9 | [缓存满了，刚被读到的 KV Cache，淘汰线程为什么删不掉它？](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
 | 10 | [KV Cache 已经写进 SSD，为什么其他节点还可能读不到？](10-ssd-tiering.md) | [篇9：SSD 分层](../09-ssd-tiering.md) |
 | 11 | [共享了 KV Cache，为什么推理不一定更快？](11-kv-reuse-and-inference.md) | [篇10：vLLM 集成](../10-vllm-integration.md) |
 
@@ -37,7 +37,7 @@
 
 “配图”说明用于标识插图位置；发布时用导出的图片替换代码块，并保留有解释作用的图注。原理图不表达未经验证的性能倍数。
 
-11 篇均已由 `build_publish.py` 生成 `publish/` 目录下的发布稿 Markdown、内联 CSS HTML 与 PNG；`publish/index.html` 是本地预览首页。全部正式 HTML 已在 360px、390px 的 Chrome 视口检查页面与正文横向溢出、图片加载和表格宽度，并对第 1、3、4、6、7、10 篇做了人工视觉复核。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
+11 篇均已由 `build_publish.py` 生成 `publish/` 目录下的发布稿 Markdown 与 PNG。`publish/` 下的 HTML、report.json 与 manifest.json 已删除；如需本地预览，需要重新运行完整构建。此前的 360px、390px Chrome 视口检查和第 1、3、4、6、7、10 篇人工复核针对已删除的旧 HTML，不能代表当前 Markdown。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
 
 ## 版本与证据边界
 

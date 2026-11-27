@@ -1,12 +1,12 @@
 # 第5篇｜Mooncake 里 key 明明存在，为什么还是读不到副本？
 
-**摘要：**B 查询 key `K` 却收到 `REPLICA_IS_NOT_READY`。同一个错误码可能来自不同分支；沿查询走四站，看每一站能排除什么、下一步该查什么。
+**摘要：**推理实例 B 查询 key `K` 却收到 `REPLICA_IS_NOT_READY`。同一个错误码可能来自不同分支；沿查询走四站，看每一站能排除什么、下一步该查什么。
 
-实例 B 查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
+在 Mooncake 里，推理实例 B（下文简称实例 B）查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
 
 这个错误容易被直接理解成"对象不存在"或"再等等就好"。但同一个返回码背后，可能是副本还在 `PROCESSING`，也可能是句柄或传输端点失效。只看一行错误日志，分不出是哪一种。
 
-第3篇已经讲过写入可见性：`PutStart` 之后、`PutEnd` 之前，副本停在 `PROCESSING`。这里不重复那套系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
+第3篇已经讲过写入可见性：`PutStart` 之后、`PutEnd` 之前，副本停在 `PROCESSING`。这里不再重复系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
 
 ## 第一站：Client::Query 只把查询交给 Master
 
@@ -83,6 +83,6 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 - [MasterService::GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
 - [PROCESSING 副本的测试用例](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4041)
 
-[源码解析版](../../01-source-navigation.md) · [系列目录与排版说明](index.html)
+[源码解析版](../../01-source-navigation.md) · [系列目录与排版说明](README.md)
 
-[上一篇](04-get-and-lease.html) · [下一篇](06-transfer-lifecycle.html)
+[上一篇](04-get-and-lease.md) · [下一篇](06-transfer-lifecycle.md)

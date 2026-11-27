@@ -2,7 +2,7 @@
 
 **摘要：**拓扑上更近、当下可选、实际使用，是三个不同答案。用一台双 NUMA、双网卡主机跟一次传输，并用只改本地 HCA 的最小对照验证选路。
 
-一台服务器上有两个 NUMA 节点，每个节点各挂一张 RDMA 网卡。A 的发送进程绑定在 NUMA 0 的 CPU 上，源 buffer 也分配在 NUMA 0；两张网卡都能连到远端同一个 R1 Segment。
+一台服务器上有两个 NUMA 节点，每个节点各挂一张 RDMA 网卡。推理实例 A（下文简称实例 A）的发送进程绑定在 NUMA 0 的 CPU 上，源 buffer 也分配在 NUMA 0；两张网卡都能连到远端同一个 R1 Segment。
 
 A 发起一次主机内存到 R1 的传输。哪张网卡在拓扑上更近？哪张在注册和连接条件下真的可选？最后实际用了哪张？
 
@@ -59,7 +59,7 @@ A 发起一次主机内存到 R1 的传输。哪张网卡在拓扑上更近？�
 - 远端 R1 Segment、传输方向（A 写入 R1）、大小、并发度和连接参数保持一致；
 - 每次传输前后读取本地两个端口的计数增量，并记录实际选中的本地 HCA（如果有设备选择记录）。
 
-开场先确认源内存的实际落点。不要只凭分配代码的意图；用分配器记录或系统提供的 NUMA 落点信息确认这段源区间确实在 NUMA 0，再开始比较。
+开始比较前，先确认源内存的实际落点。不要只凭分配代码的意图；用分配器记录或系统提供的 NUMA 落点信息确认这段源区间确实在 NUMA 0，再开始比较。
 
 四组实验：
 
@@ -91,6 +91,6 @@ A 发起一次主机内存到 R1 的传输。哪张网卡在拓扑上更近？�
 - [Topology::selectDevice](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/topology.cpp#L761) · [RdmaTransport::selectDevice](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp#L1155)
 - [WorkerPool::selectPeerDevice](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L52)
 
-[源码解析版](../../07-multi-nic-numa.md) · [系列目录与排版说明](index.html)
+[源码解析版](../../07-multi-nic-numa.md) · [系列目录与排版说明](README.md)
 
-[上一篇](07-rdma-data-path.html) · [下一篇](09-cache-eviction.html)
+[上一篇](07-rdma-data-path.md) · [下一篇](09-cache-eviction.md)

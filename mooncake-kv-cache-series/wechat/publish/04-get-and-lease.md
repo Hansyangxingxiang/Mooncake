@@ -1,8 +1,8 @@
-# 第4篇｜字节读回来了，这次 Get 为什么还可能失败？
+# 第4篇｜Mooncake 里 KV Cache 字节读回来了，这次 Get 为什么还可能失败？
 
-**摘要：**B 从 R1 读回了字节，这次 Get 仍可能失败。定位、搬完、可接受，是三个不同时刻。
+**摘要：**推理实例 B 从 R1 读回了字节，这次 Get 仍可能失败。定位、搬完、可接受，是三个不同时刻。
 
-实例 B 查询 key `K`，Master 返回 R1 的副本描述与一段读保护。
+在 Mooncake 里，推理实例 B（下文简称实例 B）查询 key `K`，Master 返回 R1 的副本描述与一段读保护。
 
 B 开始从 R1 搬运数据。传输很慢，跨过了 lease 的截止时间。字节最终全部到达本地 buffer。
 
@@ -14,7 +14,7 @@ B 开始从 R1 搬运数据。传输很慢，跨过了 lease 的截止时间。�
 
 读方拿到副本描述后，系统不能马上把对应空间用于其他对象，否则读方可能访问到已被复用的数据。
 
-Lease 提供的正是这个有边界的读取窗口。它保护的不只是地址，而是"在这段时间内，这份数据不会被正常删除或淘汰"。
+Lease 提供的正是这个有边界的读取窗口。它保护的不只是地址，还包括"在这段时间内，这份数据不会被正常删除或淘汰"。
 
 Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。客户端不是直接使用 Master 的时间：它在发出查询 RPC 之前先取一次本地 `steady_clock` 起点，收到响应后用 `start_time + lease_ttl_ms` 算出截止时间。因此查询 RPC 本身的耗时也计入客户端的可用窗口；TTL 不是从响应到达才开始计时。
 
@@ -112,6 +112,6 @@ lease 到期只代表**保护窗口结束**，不代表对象立刻被删除。�
 - [SelectBestReplica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica_selection.h#L123)
 - [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [RealClient::get_buffer_internal（LOCAL_DISK 分支）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L2815)
 
-[源码解析版](../../03-get-path.md) · [系列目录与排版说明](index.html)
+[源码解析版](../../03-get-path.md) · [系列目录与排版说明](README.md)
 
-[上一篇](03-put-visibility.html) · [下一篇](05-source-reading.html)
+[上一篇](03-put-visibility.md) · [下一篇](05-source-reading.md)
