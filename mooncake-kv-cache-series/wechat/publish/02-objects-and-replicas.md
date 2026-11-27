@@ -29,9 +29,10 @@
 
 `R1`、`R2` 可能位于不同存储节点，各自占据一段分配好的内存。它们的内容相同，但地址不同，状态也可能不同步——一个已经 `COMPLETE`，另一个仍在 `PROCESSING`。
 
-![配图1：key K、对象元数据与两份内存副本。](images/02-objects-and-replicas-fig1.png)
+![配图1：key K 的元数据与两份副本范围。](images/02-objects-and-replicas-fig1.png)
 
-图注：R1、R2 是同一对象的两个副本，各自只占用所在 Segment 的一段已分配区域。Segment 提供可分配空间，不等于一个对象，也不等于一个副本。
+图注：Master 内存态保存 `ObjectMetadata` 与副本列表 `R1`、`R2`；双线边框表示副本只占所在 Segment 的一段已分配区间。副本记录地址与长度，Segment 提供可分配空间，两者不是同一个对象。
+
 **对象是否存在，与某一份内存副本是否存在，并不是同一件事。**
 
 内存副本被淘汰后，如果还有磁盘副本仍然有效，对象仍可能被读取。磁盘副本是可选的另一种介质，它不是内存副本的别名；本篇的主线仍是 R1、R2 这两份内存副本。
@@ -58,6 +59,7 @@ Store 层的 slice 是一个连续内存区域：指针加长度。调用方把�
 ![配图2：从 R1 的地址范围到传输片段。](images/02-objects-and-replicas-fig2.png)
 
 图注：slice 数量为示意。Store 调用层如何组织 slice、传输后端是否再拆分，取决于实际路径，不固定一一对应。
+
 因此不能假设：
 
 > 一个对象对应一个请求，一个请求对应一个网络操作。
@@ -91,6 +93,6 @@ R1 已经分到了位置。B 什么时候才能读它？
 - [ObjectMetadata](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/master_service.h#L1031)
 - [Replica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica.h#L203) · [AllocatedBuffer](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/allocator.h#L39) · [Segment](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/types.h#L433)
 
-[源码解析版](../../04-core-data-structures.md) · [系列目录与排版说明](README.md)
+[源码解析版](../../04-core-data-structures.md) · [系列目录与排版说明](index.html)
 
-[上一篇](01-shared-kv-cache.md) · [下一篇](03-put-visibility.md)
+[上一篇](01-shared-kv-cache.html) · [下一篇](03-put-visibility.html)

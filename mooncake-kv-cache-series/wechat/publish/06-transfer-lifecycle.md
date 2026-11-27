@@ -19,6 +19,7 @@
 ![配图1：传输任务层级。](images/06-transfer-lifecycle-fig1.png)
 
 图注：层级只表示组织关系；不同后端对 slice 的拆分与完成聚合方式可能不同。
+
 这种分层让接口能够批量组织请求，也让后端有机会根据地址、长度和路径进行调度。但它同时意味着：单个片段完成，不代表整个请求结束；某个请求失败，也不代表批次内所有工作已经停止。
 
 ## 一个跨两个后端的 batch
@@ -51,9 +52,19 @@
 
 `BatchBusy` 只表示"还有工作没结束"，不是另一种完成状态。
 
-![配图2：安全收尾的逻辑流程。](images/06-transfer-lifecycle-fig2.png)
+把收尾阶段和返回结果分开看：
 
-图注：`BatchBusy` 只表示仍有 task 未完成；只有 `freeBatchID` 返回 `OK` 才表示 `BatchDesc` 已释放。其他错误是失败或待处理结果，不能连到"已回收"。源码没有为调用方提供自动重试保证。
+1. `allocateBatchID` 分配 batch；
+2. `submitTransfer` 提交，可能跨多个后端；
+3. 查询 task 状态，确认是否都已到达终态；
+4. 尝试 `freeBatchID`。
+
+`freeBatchID` 的三种结果：
+
+- `Status::OK`：所有 task 已结束，`BatchDesc` 已释放。
+- `Status::BatchBusy`：仍有 task 未结束，batch 仍存在；继续管理，不能释放请求描述与 buffer。
+- 其他错误：释放未完成，batch 仍存在；不能把它当成已回收。
+
 因此，最早的安全释放点是：所有已提交 task 都到达终态，且 `freeBatchID` 返回 `OK`。如果返回 `BatchBusy` 或其他错误，batch 仍然存在，调用方还要继续管理它。
 
 ## 三种生命周期落到这条路径
@@ -80,6 +91,6 @@
 - [MultiTransport::submitTransfer](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L130) · [MultiTransport::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L108)
 - [MultiTransport::getBatchTransferStatus](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L363)
 
-[源码解析版](../../05-transfer-engine-task-lifecycle.md) · [系列目录与排版说明](README.md)
+[源码解析版](../../05-transfer-engine-task-lifecycle.md) · [系列目录与排版说明](index.html)
 
-[上一篇](../05-source-reading.md) · [下一篇](07-rdma-data-path.md)
+[上一篇](05-source-reading.html) · [下一篇](07-rdma-data-path.html)

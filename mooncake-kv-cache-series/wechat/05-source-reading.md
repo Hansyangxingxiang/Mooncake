@@ -10,7 +10,7 @@
 
 ## 第一站：Client::Query 只把查询交给 Master
 
-B 的查询入口是 `Client::Query`。它在发出 RPC 之前取一次本地 `steady_clock` 起点，然后调用 `master_client_.GetReplicaList(object_key)`，把返回的副本列表、lease 截止时间和 object checksum 组装成 `QueryResult`。
+B 的查询入口是 [`Client::Query`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)。它在发出 RPC 之前取一次本地 `steady_clock` 起点，然后调用 `master_client_.GetReplicaList(object_key)`，把返回的副本列表、lease 截止时间和 object checksum 组装成 `QueryResult`。
 
 这一站要看的证据是 RPC 返回状态。如果 Master 返回 `REPLICA_IS_NOT_READY`，`Client::Query` 不会在本地把它改写成别的错误，也不会在这里替调用方选副本。
 
@@ -18,7 +18,7 @@ B 的查询入口是 `Client::Query`。它在发出 RPC 之前取一次本地 `s
 
 ## 第二站：Master 先判断 key 是否存在
 
-进入 `MasterService::GetReplicaList`，第一道判断是 `accessor.Exists()`。key 不存在时，Master 直接返回 `OBJECT_NOT_FOUND`。
+进入 [`MasterService::GetReplicaList`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626)，第一道判断是 `accessor.Exists()`。key 不存在时，Master 直接返回 `OBJECT_NOT_FOUND`。
 
 所以，如果 B 收到的是 `REPLICA_IS_NOT_READY`，在这个查询时刻，K 的 `ObjectMetadata` 是存在的。至少可以排除"这个 key 从未写入过"。
 
@@ -26,7 +26,7 @@ B 的查询入口是 `Client::Query`。它在发出 RPC 之前取一次本地 `s
 
 ## 第三站：可读副本是过滤出来的
 
-key 存在之后，`GetReplicaList` 用 `VisitReplicas(IsReplicaReadable)` 遍历副本，只把通过检查的副本放进结果列表。
+key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通过 [`IsReplicaReadable`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546) 检查的副本放进结果列表。
 
 `IsReplicaReadable` 至少要求：
 
@@ -47,25 +47,16 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas(IsReplicaReadable)` 遍�
 
 因此，`REPLICA_IS_NOT_READY` 还排除了"所有副本都已移除"。它表示列表为空，但至少有一个副本不是 `REMOVED`——可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效。
 
-*配图1：一次 REPLICA_IS_NOT_READY 的源码分支。*
+把这条查询路径压成判断顺序，就是：
 
-```mermaid
-flowchart TB
-    Q["Client::Query<br/>取本地起点，调用 GetReplicaList"] --> E{"Master: key 存在？"}
-    E -->|否| N1["OBJECT_NOT_FOUND"]
-    E -->|是| V["VisitReplicas(IsReplicaReadable)"]
-    V --> R{"有 COMPLETE 且句柄/端点有效的副本？"}
-    R -->|是| OK["返回可读副本列表与 lease"]
-    R -->|否| A{"所有副本都是 REMOVED？"}
-    A -->|是| N2["OBJECT_NOT_FOUND"]
-    A -->|否| N3["REPLICA_IS_NOT_READY"]
-```
-
-*图注：四个判断点对应正文四站。`REPLICA_IS_NOT_READY` 只说明"key 存在、没有可读副本、且不是全部 REMOVED"，不区分副本是 `PROCESSING` 还是句柄/端点失效。*
+1. key 不存在 → `OBJECT_NOT_FOUND`；
+2. key 存在，且存在通过 `IsReplicaReadable` 的副本 → 返回可读副本列表与 lease；
+3. key 存在，没有可读副本，且所有副本都是 `REMOVED` → `OBJECT_NOT_FOUND`；
+4. key 存在，没有可读副本，但不是全部 `REMOVED` → `REPLICA_IS_NOT_READY`。
 
 ## 用测试确认 PROCESSING 这一种情况
 
-`master_service_test.cpp` 里有一个用例覆盖了这条分支：`PutStart` 返回的副本状态是 `PROCESSING`；在调用 `PutEnd` 之前，`GetReplicaList` 返回 `REPLICA_IS_NOT_READY`；`PutEnd` 之后，测试继续执行成功的读取。
+[`master_service_test.cpp`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4069) 里有一个用例覆盖了这条分支：`PutStart` 返回的副本状态是 `PROCESSING`；在调用 `PutEnd` 之前，`GetReplicaList` 返回 `REPLICA_IS_NOT_READY`；`PutEnd` 之后，测试继续执行成功的读取。
 
 这个用例把状态固定在"分配完成、提交之前"，断言正好落在第三站和第四站之间。它证明的是这一种 `PROCESSING` 场景，不是所有 `REPLICA_IS_NOT_READY` 的来源。阅读用例时先确认它的 setup 和断言，再判断它能否解释手上的现象。
 

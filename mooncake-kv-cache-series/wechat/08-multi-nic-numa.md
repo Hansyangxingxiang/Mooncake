@@ -12,22 +12,34 @@ A 发起一次传输。哪张网卡在拓扑上更近？哪张在注册和连接
 
 拓扑上，NUMA 0 的内存离 NIC 0 更近；NIC 1 在 NUMA 1，跨节点访问要经过更长的 PCIe/UPI 路径。
 
-*配图1：NUMA 亲和关系示意。*
+*配图1：源 buffer 与两张网卡的 NUMA 位置。*
 
 ```mermaid
+%%{init: {"flowchart": {"rankSpacing": 16, "nodeSpacing": 20}}}%%
 flowchart TB
-    subgraph N0["NUMA 节点 0"]
-        M0["A 的源 buffer（NUMA 0）"] --- H0["NIC 0"]
+    subgraph N0[" "]
+        T0["NUMA 0"]
+        M0["A 的源 buffer"]
+        H0["NIC 0"]
+        T0 ~~~ M0
+        M0 --- H0
     end
-    subgraph N1["NUMA 节点 1"]
-        M1["NUMA 1 的其他内存"] --- H1["NIC 1"]
+    subgraph N1[" "]
+        T1["NUMA 1"]
+        M1["NUMA 1 内存"]
+        H1["NIC 1"]
+        T1 ~~~ M1
+        M1 --- H1
     end
-    M0 -.->|"NIC 1 访问源 buffer 需跨 NUMA"| H1
-    H0 --> P["远端节点"]
-    H1 --> P
+    P["远端 R1 Segment"]
+    M0 -.->|"跨 NUMA 访问"| H1
+    H0 -->|"候选路径"| P
+    H1 -->|"候选路径"| P
+    style T0 fill:none,stroke:none,color:#0B1F3A,font-weight:bold
+    style T1 fill:none,stroke:none,color:#0B1F3A,font-weight:bold
 ```
 
-*图注：连线表示概念上的亲和与访问关系，不代表具体机器的 PCIe 布线。源 buffer 在 NUMA 0；NIC 1 对它的访问要跨 NUMA。*
+*图注：实线表示同节点连接，虚线箭头表示 NIC 1 访问 NUMA 0 需跨 NUMA；实线箭头是两张 NIC 到 R1 的候选路径。本文未运行实验，不标实际选中路径。*
 
 这只是"更近"的答案，不是"一定用它"的答案。真正选择时，Mooncake 还要看源地址落在哪段注册内存里、哪些 HCA 的 context 可用、远端是否有对应的 rkey 和 rail。
 
@@ -40,22 +52,6 @@ flowchart TB
 第二层在 RDMA 内部，再选具体 HCA 或 rail。对本地发送端，`RdmaTransport` 会按源 buffer 的地址和长度，在本地段描述的拓扑里调用 `selectDevice`；对远端，`WorkerPool::selectPeerDevice` 会按目标段描述选择远端 HCA、校验 rkey，并在 rail 不可用时尝试其他 device_id。
 
 这两层不能混为一谈。RDMA 内部换一条 rail，只改变 RDMA 路径，系统仍然是 RDMA；同样，也不能假设任何 RDMA 故障都有自动 TCP 兜底。
-
-*配图2：两层路由。*
-
-```mermaid
-flowchart TB
-    R["传输请求"] --> T["选择 transport"]
-    T --> H["选择 HCA / rail"]
-    H --> V{"注册、访问凭据与连接可用？"}
-    V -->|是| S["提交传输"]
-    V -->|否| A{"还有可重试路径？"}
-    A -->|是| U["刷新信息或更换路径"]
-    U --> H
-    A -->|否| E["记录失败"]
-```
-
-*图注：两层选择是逻辑顺序；故障后是否重试取决于后端能力与配置，不保证总有替代路径。*
 
 ## 更近的 NIC，不一定在可选集合里
 

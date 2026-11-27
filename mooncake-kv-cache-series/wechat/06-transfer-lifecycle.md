@@ -63,21 +63,18 @@ flowchart TB
 
 `BatchBusy` 只表示"还有工作没结束"，不是另一种完成状态。
 
-*配图2：安全收尾的逻辑流程。*
+把收尾阶段和返回结果分开看：
 
-```mermaid
-flowchart TB
-    A["分配 BatchID"] --> S["submitTransfer（可能跨多个后端）"]
-    S --> Q["查询已提交工作的状态"]
-    Q --> F{"所有 task 已到达终态？"}
-    F -->|否| Q
-    F -->|是| R["尝试 freeBatchID"]
-    R -->|"Status OK"| D["BatchDesc 已释放"]
-    R -->|"BatchBusy"| Q
-    R -->|"其他错误"| E["释放失败：保留 batch 与 buffer"]
-```
+1. `allocateBatchID` 分配 batch；
+2. `submitTransfer` 提交，可能跨多个后端；
+3. 查询 task 状态，确认是否都已到达终态；
+4. 尝试 `freeBatchID`。
 
-*图注：`BatchBusy` 只表示仍有 task 未完成；只有 `freeBatchID` 返回 `OK` 才表示 `BatchDesc` 已释放。其他错误是失败或待处理结果，不能连到"已回收"。源码没有为调用方提供自动重试保证。*
+`freeBatchID` 的三种结果：
+
+- `Status::OK`：所有 task 已结束，`BatchDesc` 已释放。
+- `Status::BatchBusy`：仍有 task 未结束，batch 仍存在；继续管理，不能释放请求描述与 buffer。
+- 其他错误：释放未完成，batch 仍存在；不能把它当成已回收。
 
 因此，最早的安全释放点是：所有已提交 task 都到达终态，且 `freeBatchID` 返回 `OK`。如果返回 `BatchBusy` 或其他错误，batch 仍然存在，调用方还要继续管理它。
 

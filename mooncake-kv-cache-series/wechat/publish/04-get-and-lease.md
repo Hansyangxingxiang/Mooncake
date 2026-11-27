@@ -20,19 +20,10 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 
 按相对时间展开这次慢读。假设 lease TTL 是 200ms——这个数值只用于示意，不是默认配置：
 
-| 相对时刻 | 发生什么 |
-|---|---|
-| t = 0 | B 取本地 `steady_clock` 起点，发出查询 |
-| t = 10ms | 响应到达；截止点是 t = 0 + 200ms，不是 t = 10ms + 200ms |
-| t = 150ms | B 开始从 R1 搬运 |
-| t = 260ms | 字节全部返回本地 buffer |
-| t = 260ms | B 检查 lease：已过 t = 200ms，拒绝本次结果 |
+![配图1：一次跨过 lease 到期的读取时间线。](images/04-get-and-lease-fig1.png)
 
-查询 RPC 的 10ms 也被算进读取窗口。TTL 不是从响应到达才开始计时。
+图注：B 在查询前取本地起点，截止 = 起点 + TTL。搬运跨过截止点后，字节仍可能到达，但事后检查返回 `LEASE_EXPIRED`。橙色虚线框标出到期点；`LOCAL_DISK` offload 例外见正文。
 
-![配图1：一次跨过 lease 到期的读取。](images/04-get-and-lease-fig1.png)
-
-图注：时间线是「获得描述与读保护 → 开始搬运 → lease 到期 → 搬运完成 → 事后检查」。复查发生在传输与可选 checksum 之后，条件是本地 `steady_clock` 到达截止点，结果为 `LEASE_EXPIRED`。这是经 `Client::Get` 的路径；`LOCAL_DISK` offload 的例外见下文。
 这里说的"事后检查"有明确范围。`v0.3.13.post1` 中，`RealClient::get_buffer_internal` 的 `LOCAL_DISK` 全量 offload 分支直接调用 `batch_get_into_offload_object_internal`，之后只做 checksum，不调用 `IsLeaseExpired`，因此不经过 `Client::Get` 的同一处事后检查。同一实现里的 `DISK` 副本仍走 `Client::Get`，会经过检查。所以例外属于那条 offload 路径，不能外推到所有磁盘读取。
 
 这条路径采用"尽力读 + 事后否决"：先完成传输，再判断这次读取是否仍在承诺窗口内。
@@ -48,9 +39,6 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 3. **搬运**：按副本介质和目标 buffer 选择传输方式。
 4. **检查**：传输结果、可选校验、lease 全部通过，才接受结果；这是经 `Client::Get` 的路径，`LOCAL_DISK` offload 例外见上。
 
-![配图2：Get 的四个阶段与错误类别。](images/04-get-and-lease-fig2.png)
-
-图注：图把一次经 `Client::Get` 的读取压成四个阶段，分支只标错误类别；具体搬运路径取决于副本介质和目标 buffer。
 **Master 只过滤并返回可读副本列表，不替客户端选副本。** 选择发生在客户端：
 
 - `Client::Get` 内部调用 `FindFirstCompleteReplica`，取列表中第一个 `COMPLETE` 副本；
@@ -60,12 +48,13 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 
 搬运方式则取决于介质和目标：
 
-| 副本类型 | 目标 buffer | 路径 |
-|---|---|---|
-| MEMORY | 主机且可直读 | 交给 Transfer Engine 读到目标 buffer |
-| MEMORY | GPU 等设备 | 主机暂存后再复制到目标 |
-| LOCAL_DISK | 任意 | 存储节点执行 offload 读取 |
-| DISK / DFS | 任意 | 临时 buffer 后再 scatter |
+**MEMORY（目标 buffer 在主机且可直读）**：交给 Transfer Engine 读到目标 buffer。
+
+**MEMORY（目标 buffer 在 GPU 等设备）**：主机暂存后再复制到目标。
+
+**LOCAL_DISK**：存储节点执行 offload 读取。
+
+**DISK / DFS**：临时 buffer 后再 scatter。
 
 "直读目标 buffer"通常表示避免额外的应用层中转，**不是对所有后端、所有设备的零拷贝承诺**。TCP、RDMA、GPU 路径内部是否拷贝，要按实际后端判断。
 
@@ -119,6 +108,6 @@ B 已经知道 R1 可读，也读回了字节。下一次追踪这条路径时�
 - [SelectBestReplica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica_selection.h#L123)
 - [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [RealClient::get_buffer_internal（LOCAL_DISK 分支）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L2815)
 
-[源码解析版](../../03-get-path.md) · [系列目录与排版说明](README.md)
+[源码解析版](../../03-get-path.md) · [系列目录与排版说明](index.html)
 
-[上一篇](03-put-visibility.md) · [下一篇](../05-source-reading.md)
+[上一篇](03-put-visibility.html) · [下一篇](05-source-reading.html)

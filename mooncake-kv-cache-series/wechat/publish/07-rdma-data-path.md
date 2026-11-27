@@ -20,9 +20,10 @@ A 算完一段前缀 KV，准备把它写入 R1。源数据在 A 的主机内存
 
 这些准备通常可以复用。不能把每个数据请求都理解成重新注册内存、重新建立全部连接。对于同一个 Segment 和同一组 QP，后续请求主要是在已有连接上提交新的 WR。
 
-![配图1：准备阶段与数据阶段。](images/07-rdma-data-path-fig1.png)
+![配图1：连接与内存准备。](images/07-rdma-data-path-fig1.png)
 
-图注：准备阶段由两端 TE 参与；数据阶段只有两端的 RNIC 搬运字节，远端 TE 软件不逐次接收 WRITE 数据。完成事件由本地 TE 从本地 CQ 观察。握手与元数据交换方式依配置而异，图中省略了独立 metadata server。
+图注：准备阶段由两端 TE 参与；交换的是 Segment、远端地址与访问凭据。同一 Segment 与同一组 QP 的准备可以复用，不必为每个请求重新注册或建连。
+
 ## 提交：本地 TE 把 slice 变成 WR
 
 WR 描述希望网卡执行的工作。在这条固定路径上，`RdmaEndPoint::submitPostSend` 为每个 slice 构造一个 `ibv_send_wr`：
@@ -44,6 +45,10 @@ WR 描述希望网卡执行的工作。在这条固定路径上，`RdmaEndPoint:
 一次 poll 最多取 64 个 CQE。即使每个 WR 都设置了 `IBV_SEND_SIGNALED`，上层看到的也是 CQE 批量回收后映射到 slice，再由 slice 聚合到 task，不意味着每个 WR 都由上层单独处理一个事件。
 
 这里观察的是**本地完成**：本地 RNIC 已经回收这次 WRITE 的完成事件。远端应用是否已经处理这块内存，不在这个 CQE 的语义里。
+
+![配图2：一次 WRITE 与本地完成。](images/07-rdma-data-path-fig2.png)
+
+图注：软件提交发生在本地 TE 到本地 RNIC；对象字节经 RDMA WRITE 到达远端 RNIC，再 DMA 写入 R1。CQE 只表示本地完成；副本可见性还要等 PutEnd（第3篇）。
 
 这就形成一条流水线：
 
@@ -72,6 +77,6 @@ RDMA 可以减少传统网络栈中的部分 CPU 搬运，但应用是否存在 
 - [RdmaEndPoint::submitPostSend](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_endpoint.cpp#L915) · [IBV_WR_RDMA_WRITE / IBV_SEND_SIGNALED](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_endpoint.cpp#L972)
 - [WorkerPool CQ poll](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L599) · [Slice::markSuccess / markFailed](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transport/transport.h#L206)
 
-[源码解析版](../../06-rdma-data-path.md) · [系列目录与排版说明](README.md)
+[源码解析版](../../06-rdma-data-path.md) · [系列目录与排版说明](index.html)
 
-[上一篇](06-transfer-lifecycle.md) · [下一篇](../08-multi-nic-numa.md)
+[上一篇](06-transfer-lifecycle.html) · [下一篇](08-multi-nic-numa.html)

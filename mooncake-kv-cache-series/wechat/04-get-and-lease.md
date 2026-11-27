@@ -20,33 +20,23 @@ Master 在返回可读副本列表时授予 lease，并在响应里带上 TTL。
 
 按相对时间展开这次慢读。假设 lease TTL 是 200ms——这个数值只用于示意，不是默认配置：
 
-| 相对时刻 | 发生什么 |
-|---|---|
-| t = 0 | B 取本地 `steady_clock` 起点，发出查询 |
-| t = 10ms | 响应到达；截止点是 t = 0 + 200ms，不是 t = 10ms + 200ms |
-| t = 150ms | B 开始从 R1 搬运 |
-| t = 260ms | 字节全部返回本地 buffer |
-| t = 260ms | B 检查 lease：已过 t = 200ms，拒绝本次结果 |
-
-查询 RPC 的 10ms 也被算进读取窗口。TTL 不是从响应到达才开始计时。
-
-*配图1：一次跨过 lease 到期的读取。*
+*配图1：一次跨过 lease 到期的读取时间线。*
 
 ```mermaid
-sequenceDiagram
-    participant B as 实例 B（读取 Client）
-    participant M as Master
-    participant R1 as R1（目标副本端）
-    B->>M: 查询 K
-    M-->>B: 返回 R1 描述符与 lease
-    B->>R1: 开始搬运
-    Note over B,R1: 时间推进，lease 到期
-    R1-->>B: 搬运完成
-    B->>B: 检查 lease：已过期
-    Note over B: 拒绝使用本次结果
+%%{init: {"flowchart": {"nodeSpacing": 20, "rankSpacing": 20}}}%%
+flowchart TB
+    T0["t = 0<br/>取本地起点，发出查询"]
+    T1["t = 10ms<br/>收到描述；<br/>截止 = 起点 + 200ms"]
+    T2["t = 150ms<br/>开始从 R1 搬运"]
+    T3["t = 200ms<br/>lease 到期"]
+    T4["t = 260ms<br/>字节到达本地 buffer"]
+    T5["t = 260ms<br/>检查 lease：已过期"]
+    T0 --> T1 --> T2 --> T3 --> T4 --> T5
+    style T3 stroke:#D46B08,stroke-width:2px,stroke-dasharray:6 3
+    style T5 stroke:#D46B08,stroke-width:2px
 ```
 
-*图注：时间线是「获得描述与读保护 → 开始搬运 → lease 到期 → 搬运完成 → 事后检查」。复查发生在传输与可选 checksum 之后，条件是本地 `steady_clock` 到达截止点，结果为 `LEASE_EXPIRED`。这是经 `Client::Get` 的路径；`LOCAL_DISK` offload 的例外见下文。*
+*图注：B 在查询前取本地起点，截止 = 起点 + TTL。搬运跨过截止点后，字节仍可能到达，但事后检查返回 `LEASE_EXPIRED`。橙色虚线框标出到期点；`LOCAL_DISK` offload 例外见正文。*
 
 这里说的"事后检查"有明确范围。`v0.3.13.post1` 中，`RealClient::get_buffer_internal` 的 `LOCAL_DISK` 全量 offload 分支直接调用 `batch_get_into_offload_object_internal`，之后只做 checksum，不调用 `IsLeaseExpired`，因此不经过 `Client::Get` 的同一处事后检查。同一实现里的 `DISK` 副本仍走 `Client::Get`，会经过检查。所以例外属于那条 offload 路径，不能外推到所有磁盘读取。
 
@@ -63,23 +53,6 @@ sequenceDiagram
 3. **搬运**：按副本介质和目标 buffer 选择传输方式。
 4. **检查**：传输结果、可选校验、lease 全部通过，才接受结果；这是经 `Client::Get` 的路径，`LOCAL_DISK` offload 例外见上。
 
-*配图2：Get 的四个阶段与错误类别。*
-
-```mermaid
-flowchart TB
-    Q["查询 K：副本与 lease"] --> V{"有可读副本？"}
-    V -->|否| E1["OBJECT_NOT_FOUND / REPLICA_IS_NOT_READY"]
-    V -->|是| S["客户端选择副本"]
-    S -->|"没有 COMPLETE"| E2["INVALID_REPLICA"]
-    S --> T["搬运数据"]
-    T --> C["检查传输、可选校验、lease"]
-    C -->|"全部通过"| OK["接受结果"]
-    C -->|"lease 过期"| E3["LEASE_EXPIRED"]
-    C -->|"校验不符"| E4["CHECKSUM_MISMATCH"]
-```
-
-*图注：图把一次经 `Client::Get` 的读取压成四个阶段，分支只标错误类别；具体搬运路径取决于副本介质和目标 buffer。*
-
 **Master 只过滤并返回可读副本列表，不替客户端选副本。** 选择发生在客户端：
 
 - `Client::Get` 内部调用 `FindFirstCompleteReplica`，取列表中第一个 `COMPLETE` 副本；
@@ -89,12 +62,13 @@ flowchart TB
 
 搬运方式则取决于介质和目标：
 
-| 副本类型 | 目标 buffer | 路径 |
-|---|---|---|
-| MEMORY | 主机且可直读 | 交给 Transfer Engine 读到目标 buffer |
-| MEMORY | GPU 等设备 | 主机暂存后再复制到目标 |
-| LOCAL_DISK | 任意 | 存储节点执行 offload 读取 |
-| DISK / DFS | 任意 | 临时 buffer 后再 scatter |
+**MEMORY（目标 buffer 在主机且可直读）**：交给 Transfer Engine 读到目标 buffer。
+
+**MEMORY（目标 buffer 在 GPU 等设备）**：主机暂存后再复制到目标。
+
+**LOCAL_DISK**：存储节点执行 offload 读取。
+
+**DISK / DFS**：临时 buffer 后再 scatter。
 
 "直读目标 buffer"通常表示避免额外的应用层中转，**不是对所有后端、所有设备的零拷贝承诺**。TCP、RDMA、GPU 路径内部是否拷贝，要按实际后端判断。
 

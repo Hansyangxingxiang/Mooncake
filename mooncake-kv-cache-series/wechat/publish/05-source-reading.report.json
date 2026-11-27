@@ -1,0 +1,22 @@
+{
+  "source": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/05-source-reading.html-src.md",
+  "output": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/05-source-reading.html",
+  "title": "第5篇｜K 明明存在，B 为什么收到 REPLICA_IS_NOT_READY？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 6,
+    "paragraphs": 25,
+    "list_items": 15,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 0,
+    "words": 1410,
+    "read_minutes": 4
+  },
+  "warnings": []
+}

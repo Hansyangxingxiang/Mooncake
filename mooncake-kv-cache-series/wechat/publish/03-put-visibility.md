@@ -26,9 +26,10 @@
 
 同 key 已存在时还有另一条路径：`PutStart` 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 在传输开始前就把它当成功返回。本文后面会把这两条路径分开。
 
-![配图1：A 写入、B 两次查询的时序。](images/03-put-visibility-fig1.png)
+![配图1：B 在 PutEnd 前后各查询一次。](images/03-put-visibility-fig1.png)
 
-图注：这是普通成功路径。数据流只发生在 A 与 R1 之间；指向 Master 的箭头只表示申请、查询或提交。B 第二次拿到的是读取候选，后续读取仍可能失败。
+图注：B 第一次查询在 PutEnd 前，得到 `REPLICA_IS_NOT_READY`；Master 接受 PutEnd 后，第二次查询才返回 R1 描述。黄色状态条标出传输完成到 PutEnd 的间隔。
+
 把这条路径压成四个时刻：
 
 1. A 从 Master 拿到 R1，状态 `PROCESSING`；
@@ -81,19 +82,30 @@ B 此时查询 K，能拿到 R1 的描述。A 看到的"重试成功"表示"对�
 
 超过 discard 窗口后，新的 `PutStart` 才能顶替旧对象，并重新分配副本。旧副本先移入 `discarded_replicas_`，等到 release 超时才真正释放。顶替不是复用旧空间。
 
-| 已有状态 | 写方返回 | 本次 buffer 是否写入 | 读方可见结果 |
-|---|---|---|---|
-| 无对象（首次写入正常路径） | `PutStart` 返回副本描述；传输后 `PutEnd` 成功，`Client::Put` 返回成功 | 是 | `PutEnd` 前 `REPLICA_IS_NOT_READY`；之后返回副本描述 |
-| 已有 `COMPLETE` 副本（含 `PutEnd` 成功但响应丢失） | `OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功 | 否，已有内容不变 | 返回副本描述 |
-| `PROCESSING`，未超过 discard（默认 30 秒） | `OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功 | 否，原 `PROCESSING` 仍不可读 | `REPLICA_IS_NOT_READY` |
-| `PROCESSING`，超过 discard（默认 30 秒） | `PutStart` 顶替并返回新副本描述；传输后 `PutEnd` 成功则返回成功 | 是，写入新分配的副本；旧副本进入 `discarded_replicas_` | 新 `PutEnd` 前 `REPLICA_IS_NOT_READY`；之后返回新副本描述 |
+**无对象（首次写入正常路径）**
+- 写方：`PutStart` 返回副本描述；传输后 `PutEnd` 成功，`Client::Put` 返回成功。
+- 本次 buffer：写入。
+- 读方：`PutEnd` 前得到 `REPLICA_IS_NOT_READY`；之后返回副本描述。
+
+**已有 `COMPLETE` 副本（含 `PutEnd` 成功但响应丢失）**
+- 写方：`OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功。
+- 本次 buffer：不写入，已有内容不变。
+- 读方：返回副本描述。
+
+**`PROCESSING`，未超过 discard（默认 30 秒）**
+- 写方：`OBJECT_ALREADY_EXISTS`；`Client::Put` 返回成功。
+- 本次 buffer：不写入，原 `PROCESSING` 仍不可读。
+- 读方：得到 `REPLICA_IS_NOT_READY`。
+
+**`PROCESSING`，超过 discard（默认 30 秒）**
+- 写方：`PutStart` 顶替并返回新副本描述；传输后 `PutEnd` 成功则返回成功。
+- 本次 buffer：写入新分配的副本；旧副本进入 `discarded_replicas_`。
+- 读方：新 `PutEnd` 前得到 `REPLICA_IS_NOT_READY`；之后返回新副本描述。
 
 两个超时都从 `PutStart` 写入的 `metadata.put_start_time` 起算：
 
-| 参数 | 默认 | 触发后发生什么 |
-|---|---|---|
-| `put_start_discard_timeout_sec` | 30 秒 | 超时前，同 key 的新 `PutStart` 返回 `OBJECT_ALREADY_EXISTS`；超时后，新 `PutStart` 才能顶替旧对象 |
-| `put_start_release_timeout_sec` | 600 秒 | 旧 `PROCESSING` 副本被顶替后先移入 `discarded_replicas_`，到 `put_start_time + 600 秒` 才真正释放 |
+- `put_start_discard_timeout_sec`（默认 30 秒）：超时前，同 key 的新 `PutStart` 返回 `OBJECT_ALREADY_EXISTS`；超时后，新 `PutStart` 才能顶替旧对象。
+- `put_start_release_timeout_sec`（默认 600 秒）：旧 `PROCESSING` 副本被顶替后先移入 `discarded_replicas_`，到 `put_start_time + 600 秒` 才真正释放。
 
 提前返回的路径不会调用 `TransferWrite`；若启用 object checksum，本地仍可能计算一次校验值，但它不会写入共享副本。
 
@@ -132,6 +144,6 @@ B 此时查询 K，能拿到 R1 的描述。A 看到的"重试成功"表示"对�
 - [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
 - [discard / release 超时默认值](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/types.h#L119)
 
-[源码解析版](../../02-put-path.md) · [系列目录与排版说明](README.md)
+[源码解析版](../../02-put-path.md) · [系列目录与排版说明](index.html)
 
-[上一篇](02-objects-and-replicas.md) · [下一篇](04-get-and-lease.md)
+[上一篇](02-objects-and-replicas.html) · [下一篇](04-get-and-lease.html)

@@ -38,10 +38,9 @@ Mooncake 提供 Store 和 Transfer Engine；识别前缀、生成 key、最终�
 
 实际搬运字节的是嵌入进程中的 Transfer Engine。它根据配置和运行条件，使用 TCP、RDMA 等后端完成传输。
 
-![配图1：两台实例、Master 与目标副本。](images/01-shared-kv-cache-fig1.png)
+![配图1：A、B、Master 与 R1 的位置关系。](images/01-shared-kv-cache-fig1.png)
 
-图注：虚线区分请求与响应，方向由箭头表示；粗实线是对象字节，A 写 R1、B 从 R1 读，字节都不经过 Master。
-**Master 维护的是数据的位置与状态，对象数据在 Client 之间传输。**
+图注：R1 由 Master 分配，位于目标 Segment 内；对象字节由 Client 侧的 Transfer Engine 在 A、B 与 R1 之间搬运，Master 不在数据路径上。
 
 ## 一次写、一次读：申请、搬运、提交、查询、加载
 
@@ -59,9 +58,6 @@ Mooncake 提供 Store 和 Transfer Engine；识别前缀、生成 key、最终�
 
 第3篇会把"搬运完成"与"提交可见"这两个时刻拆开；第4篇会解释读保护到期后，为什么读回字节仍可能被拒绝。
 
-![配图2：一次写入与一次读取的时序。](images/01-shared-kv-cache-fig2.png)
-
-图注：复用成立的前提是同一 key、缓存格式兼容，且推理框架把数据真正加载进自己的 KV cache。图为普通成功路径，不展开失败与重试。
 ## 两类元数据，各管一层
 
 Mooncake 里有两类元数据，容易混在一起：
@@ -91,6 +87,6 @@ B 查到的是 key `K`。真正读取的，究竟是哪一份数据？
 - [Store 设计：Master 不接管数据流](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/docs/source/design/store/mooncake-store.md#L76)
 - [Transfer Engine 设计：Segment 抽象](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/docs/source/design/transfer-engine/index.md#L21)
 
-[源码解析版](../../00-architecture-overview.md) · [系列目录与排版说明](README.md)
+[源码解析版](../../00-architecture-overview.md) · [系列目录与排版说明](index.html)
 
-[下一篇](02-objects-and-replicas.md)
+[下一篇](02-objects-and-replicas.html)

@@ -12,8 +12,9 @@ does not rewrite prose: it only
   * refreshes a 11-entry manifest and index.
 
 Usage:
-    python3 build_publish.py --articles 1,2,3,4,6,7 \
-        --md2wx /path/to/md2wx.py --chrome /usr/bin/google-chrome
+    python3 build_publish.py --articles all \
+        --md2wx "$HOME/.claude/skills/producing-tech-blog/scripts/md2wx.py" \
+        --chrome /usr/bin/google-chrome
 
 Articles not selected remain source-only in the index unless prior publish
 artifacts already exist.
@@ -37,8 +38,8 @@ BASELINE_TAG = "v0.3.13.post1"
 BASELINE_COMMIT = "719735896c86b56fabec6cf3e825fb2ea640597a"
 
 MERMAID_RE = re.compile(r"^```mermaid[ \t]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
-PLACEHOLDER_RE = re.compile(r"^\*配图(\d+)[：:]\s*(.*?)\*\s*$", re.MULTILINE)
-CAPTION_RE = re.compile(r"^\*图注[：:]\s*(.*?)\*\s*$", re.MULTILINE)
+PLACEHOLDER_RE = re.compile(r"^\*配图(\d+)[：:][ \t]*(.*?)\*[ \t]*$", re.MULTILINE)
+CAPTION_RE = re.compile(r"^\*图注[：:][ \t]*(.*?)\*[ \t]*$", re.MULTILINE)
 H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 ABSTRACT_RE = re.compile(r"^\*\*摘要：\*\*\s*(.+?)\s*$", re.MULTILINE)
 SOURCE_ANALYSIS_RE = re.compile(r"\[源码解析版\]\(([^)]+)\)")
@@ -279,16 +280,20 @@ def write_tool_configs(work_dir: Path, chrome: Path, font_family: str) -> tuple:
                 "flowchart": {
                     "htmlLabels": True,
                     "curve": "linear",
-                    "nodeSpacing": 36,
-                    "rankSpacing": 48,
+                    "nodeSpacing": 24,
+                    "rankSpacing": 32,
+                    "diagramPadding": 16,
                     "useMaxWidth": True,
                 },
                 "sequence": {
                     "useMaxWidth": True,
                     "wrap": True,
-                    "boxMargin": 8,
-                    "noteMargin": 8,
-                    "messageMargin": 30,
+                    "width": 100,
+                    "height": 40,
+                    "actorMargin": 16,
+                    "boxMargin": 6,
+                    "noteMargin": 6,
+                    "messageMargin": 20,
                     "mirrorActors": False,
                     "showSequenceNumbers": False,
                 },
@@ -406,10 +411,13 @@ def rewrite_links(text: str, stems: set, built_stems: set) -> str:
         name = target.split("/")[-1]
         if Path(name).stem in stems:
             if Path(name).stem in built_stems:
-                return f"]({name})"
+                # Local preview: point built articles at their HTML, not the Markdown source.
+                base, sep, anchor = name.partition("#")
+                return f"]({Path(base).stem}.html{sep}{anchor})"
             return f"](../{name})"
         if target == "README.md":
-            return match.group(0)
+            # Local preview: the series index is the generated preview homepage.
+            return "](index.html)"
         if target.startswith("../"):
             return f"](../../{target[3:]})"
         return match.group(0)
@@ -454,6 +462,24 @@ def strip_first_h1(text: str) -> str:
     return re.sub(r"^#\s+.*\n+", "", text, count=1)
 
 
+INLINE_CODE_STYLE_RE = re.compile(r'<code style="([^"]*font-size:0\.9em[^"]*)">')
+
+
+def normalize_inline_code_wrap(html_path: Path) -> None:
+    """Let long identifiers wrap without inserting spaces into the text."""
+    text = html_path.read_text(encoding="utf-8")
+
+    def replace(match):
+        style = match.group(1)
+        if "overflow-wrap" not in style:
+            style = style.rstrip(";") + ";overflow-wrap:anywhere;"
+        return f'<code style="{style}">'
+
+    updated = INLINE_CODE_STYLE_RE.sub(replace, text)
+    if updated != text:
+        write_atomic(html_path, updated)
+
+
 def run_md2wx(md2wx: Path, md_path: Path, html_path: Path, title: str, args) -> dict:
     html_src = md_path.with_name(md_path.stem + ".html-src.md")
     html_src.write_text(strip_first_h1(md_path.read_text(encoding="utf-8")), encoding="utf-8")
@@ -484,8 +510,49 @@ def run_md2wx(md2wx: Path, md_path: Path, html_path: Path, title: str, args) -> 
         raise BuildError(f"md2wx 失败：{detail}")
     if not html_path.exists():
         raise BuildError("md2wx 未生成 HTML")
+    normalize_inline_code_wrap(html_path)
     report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
     return report
+
+
+def build_preview_index(manifest: dict, publish_dir: Path, work_dir: Path, md2wx: Path, args) -> dict:
+    src = work_dir / "index-src.md"
+    src.write_text(render_preview_index(manifest), encoding="utf-8")
+    html_path = publish_dir / "index.html"
+    report_path = publish_dir / "index.report.json"
+    for stale in (html_path, report_path):
+        stale.unlink(missing_ok=True)
+    cmd = [
+        sys.executable,
+        str(md2wx),
+        str(src),
+        "-o",
+        str(html_path),
+        "--title",
+        "Mooncake KV Cache 微信公众号系列",
+        "--accent",
+        args.accent,
+        "--font-size",
+        str(args.font_size),
+        "--line-height",
+        str(args.line_height),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        raise BuildError(f"预览首页 md2wx 失败：{detail}")
+    if not html_path.exists():
+        raise BuildError("预览首页未生成 HTML")
+    report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+    for entry in manifest["articles"]:
+        if entry["status"] == "built" and not (publish_dir / f"{entry['slug']}.html").exists():
+            raise BuildError(f"预览首页链接缺少目标：{entry['slug']}.html")
+    return {
+        "html": rel_to_repo(html_path, repo_root(Path(__file__).resolve().parent)),
+        "report": rel_to_repo(report_path, repo_root(Path(__file__).resolve().parent)),
+        "warnings": report.get("warnings", []),
+        "stats": report.get("stats", {}),
+    }
 
 
 def check_publish_markdown(path: Path, expected_figures: int) -> list:
@@ -561,6 +628,41 @@ def toolchain_record(args, md2wx: Path, chrome: Path) -> dict:
         "scale": args.scale,
         "figure_width": args.width,
     }
+
+
+def parse_viewports(raw: str) -> list:
+    viewports = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if not token.isdigit():
+            raise BuildError(f"--verified-viewports 需要整数宽度：{token}")
+        viewports.append(int(token))
+    return sorted(set(viewports))
+
+
+def _mobile_verification(args) -> dict:
+    viewports = parse_viewports(args.verified_viewports)
+    if not viewports:
+        return {"status": "not_performed", "reason": "no browser viewport check recorded"}
+    return {
+        "status": "performed",
+        "viewports": viewports,
+        "method": "Chrome headless; page/body horizontal overflow, image load, table width",
+        "scope": "all formal article HTML files",
+    }
+
+
+def _visual_review(args) -> dict:
+    articles = []
+    for token in args.visual_review.split(","):
+        token = token.strip().lstrip("0")
+        if token:
+            articles.append(token.zfill(2))
+    if not articles:
+        return {"status": "not_performed", "articles": []}
+    return {"status": "performed", "articles": articles, "method": "mobile screenshots at 360px"}
 
 
 def build_manifest(args, root: Path, articles: list, selected: list, built_stems: set,
@@ -662,20 +764,39 @@ def build_manifest(args, root: Path, articles: list, selected: list, built_stems
         "series": {"total": len(SERIES), "built": built, "pending": pending},
         "toolchain": toolchain_record(args, md2wx, chrome),
         "verification": {
-            "wechat_editor_preview": {"status": "not_performed", "reason": "non-GUI environment"},
-            "mobile_legibility": {"status": "not_performed", "reason": "no GUI"},
+            "wechat_editor_preview": {
+                "status": "not_performed",
+                "reason": "not pasted into the WeChat editor in this round",
+            },
+            "mobile_legibility": _mobile_verification(args),
+            "visual_review": _visual_review(args),
             "wechat_asset_upload": {"status": "not_performed"},
-            "github_permalinks": {"status": "not_checked", "reason": "constructed from local tag SHA"},
+            "github_permalinks": {
+                "status": "not_checked",
+                "reason": "constructed from local tag SHA; no HTTP reachability check",
+            },
         },
         "articles": entries,
     }
 
 
 def render_index(manifest: dict) -> str:
+    pending = manifest["series"]["pending"]
+    mobile = manifest["verification"]["mobile_legibility"]
+    if pending:
+        intro = (
+            "本目录由 `wechat/build_publish.py` 生成。已生成的篇目包含 Markdown、内联样式 HTML "
+            "与配图 PNG；未生成的篇目仅保留源 Markdown。"
+        )
+    else:
+        intro = (
+            "本目录由 `wechat/build_publish.py` 生成。系列 11 篇均已生成发布稿 Markdown、"
+            "内联样式 HTML 与配图 PNG。`index.html` 是本地预览首页。"
+        )
     lines = [
         "# Mooncake KV Cache 微信公众号发布稿",
         "",
-        "本目录由 `wechat/build_publish.py` 生成。已生成的篇目包含本次构建产出的 Markdown、内联样式 HTML 与配图 PNG；其余篇目仅保留源 Markdown，其“配图”列是源稿中的 Mermaid 图数量，尚无对应 PNG。",
+        intro,
         "",
         f"基线：`{BASELINE_TAG}` / `{BASELINE_COMMIT[:7]}`。生成时间：{manifest['generated_at']}。",
         "",
@@ -705,25 +826,67 @@ def render_index(manifest: dict) -> str:
         )
     lines += [
         "",
-        "“已生成”只表示本次构建写出了对应产物并通过脚本校验，不表示已在公众号编辑器或手机宽度下预览。",
+        "“已生成”表示本次构建写出了对应产物并通过脚本校验；阅读效果以实际浏览器检查为准。",
         "",
         "## 构建与校验",
         "",
         "```bash",
         "cd mooncake-kv-cache-series/wechat",
-        "python3 build_publish.py --articles 1,2,3,4,6,7 \\",
-        "  --md2wx /home/yangxx/.claude/skills/producing-tech-blog/scripts/md2wx.py \\",
-        "  --chrome /usr/bin/google-chrome --renderer npx",
+        "python3 build_publish.py --articles all \\",
+        '  --md2wx "$HOME/.claude/skills/producing-tech-blog/scripts/md2wx.py" \\',
+        "  --chrome /usr/bin/google-chrome",
         "```",
         "",
-        "脚本只替换 Mermaid 图与相对链接，不改写正文。`manifest.json` 记录每篇的产物、配图尺寸与 md2wx 报告。",
+        "脚本只替换 Mermaid 图与相对链接，不改写正文。`manifest.json` 记录每篇的产物、配图尺寸、md2wx 报告与已执行的浏览器视口检查。",
         "",
+    ]
+    if mobile.get("status") == "performed":
+        widths = "、".join(f"{width}px" for width in mobile.get("viewports", []))
+        review = manifest["verification"].get("visual_review", {})
+        reviewed = (
+            "、".join(str(int(a)) for a in review.get("articles", []))
+            if review.get("status") == "performed"
+            else ""
+        )
+        suffix = f"；已人工复核第 {reviewed} 篇的配图、图注与正文排版" if reviewed else ""
+        lines += [
+            f"已在 {widths} 的 Chrome 视口打开全部正式 HTML，检查页面与正文横向溢出、图片加载和表格宽度{suffix}。",
+            "",
+        ]
+    lines += [
         "## 未执行项",
         "",
-        "- 未在公众号编辑器中粘贴预览（非 GUI 环境）。",
-        "- 未做手机宽度下的人工可读性检查；配图宽高与是否空白由脚本校验。",
+        "- 未在公众号编辑器中粘贴预览。",
         "- 未上传图片到公众号素材库，也未发布。",
+    ]
+    if mobile.get("status") != "performed":
+        lines.append("- 未记录手机宽度浏览器检查。")
+    lines += [
         "- GitHub 永久链接按本地 tag 的 commit 构造，未做 HTTP 可达性校验。",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def render_preview_index(manifest: dict) -> str:
+    lines = [
+        "# Mooncake KV Cache 微信公众号系列",
+        "",
+        "本地预览入口。按 01–11 顺序阅读；每篇 HTML 底部有上一篇、下一篇导航。",
+        "",
+        f"基线：`{BASELINE_TAG}` / `{BASELINE_COMMIT[:7]}`。",
+        "",
+        "## 系列目录",
+        "",
+    ]
+    for entry in manifest["articles"]:
+        if entry["status"] == "built":
+            lines.append(f"- [{entry['title']}](./{entry['slug']}.html)")
+        else:
+            lines.append(f"- {entry['title']}（源稿，尚未生成 HTML）")
+    lines += [
+        "",
+        "本页只用于本地检查排版、配图与导航，不是公众号发布入口。",
         "",
     ]
     return "\n".join(lines)
@@ -812,8 +975,10 @@ def build(args) -> int:
 
     # 04 must still point at the existing 05 source.
     md04 = publish_dir / "04-get-and-lease.md"
-    if md04.exists() and "](../05-source-reading.md)" not in md04.read_text(encoding="utf-8"):
-        problems.append("04-get-and-lease.md: 篇尾未指向 ../05-source-reading.md")
+    if md04.exists():
+        tail = md04.read_text(encoding="utf-8")
+        if not re.search(r"\]\((?:\.\./)?05-source-reading\.(?:md|html)\)", tail):
+            problems.append("04-get-and-lease.md: 篇尾未指向 05-source-reading 产物")
 
     if not args.allow_missing_images:
         for article in articles:
@@ -822,6 +987,7 @@ def build(args) -> int:
 
     manifest = build_manifest(args, root, [parsed_all[n] for n in range(1, len(SERIES) + 1)], selected,
                               built_stems, parsed_all, md2wx, chrome)
+    manifest["preview"] = build_preview_index(manifest, publish_dir, work_dir, md2wx, args)
     manifest_path = publish_dir / "manifest.json"
     write_atomic(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     write_atomic(publish_dir / "README.md", render_index(manifest))
@@ -862,9 +1028,19 @@ def main() -> int:
     parser.add_argument("--font", default="Noto Sans CJK SC")
     parser.add_argument("--accent", default="#1677FF")
     parser.add_argument("--font-size", type=int, default=16)
-    parser.add_argument("--line-height", type=float, default=1.8)
+    parser.add_argument("--line-height", type=float, default=1.75)
     parser.add_argument("--force", action="store_true", help="忽略已有 PNG，强制重渲染")
     parser.add_argument("--allow-missing-images", action="store_true", help="渲染失败时保留 Mermaid 源")
+    parser.add_argument(
+        "--verified-viewports",
+        default="",
+        help="已实际打开检查的浏览器视口宽度，如 360,390；写入 manifest",
+    )
+    parser.add_argument(
+        "--visual-review",
+        default="",
+        help="已完成人工视觉复核的篇号，如 01,03,04,06,07,10；写入 manifest",
+    )
     parser.add_argument("--keep-work", action="store_true", help="保留 .work 临时目录")
     args = parser.parse_args()
     args.publish_dir = args.publish_dir.resolve()

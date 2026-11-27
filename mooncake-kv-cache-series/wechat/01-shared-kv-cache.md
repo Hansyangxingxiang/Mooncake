@@ -38,25 +38,26 @@ Mooncake 提供 Store 和 Transfer Engine；识别前缀、生成 key、最终�
 
 实际搬运字节的是嵌入进程中的 Transfer Engine。它根据配置和运行条件，使用 TCP、RDMA 等后端完成传输。
 
-*配图1：两台实例、Master 与目标副本。*
+*配图1：A、B、Master 与 R1 的位置关系。*
 
 ```mermaid
 flowchart TB
-    M["Master：维护 key K 到副本、状态与位置"]
-    A["实例 A：Client，内嵌 Transfer Engine"]
-    B["实例 B：Client，内嵌 Transfer Engine"]
-    R1["R1：Master 为 K 分配的副本"]
-    A -.->|"请求：PutStart(K) / PutEnd(K)"| M
-    M -.->|"响应：副本描述"| A
-    B -.->|"请求：Get(K)"| M
-    M -.->|"响应：可读副本描述"| B
-    A ==>|"字节写入"| R1
-    R1 ==>|"字节读取"| B
+    M["Master<br/>登记副本与状态"]
+    A["实例 A：Client<br/>内嵌 Transfer Engine"]
+    B["实例 B：Client<br/>内嵌 Transfer Engine"]
+    R1[["目标 Segment 内<br/>R1：已分配区间"]]
+    A -.->|"申请 / 提交"| M
+    M -.->|"返回副本描述"| A
+    B -.->|"查询副本"| M
+    M -.->|"返回可读副本给 B"| B
+    A ==>|"写入对象字节"| R1
+    R1 -.->|"读回对象字节"| B
+    linkStyle 2,3 stroke:#D46B08,color:#D46B08,stroke-width:2px
+    linkStyle 4 stroke:#1677FF,stroke-width:4px
+    linkStyle 5 stroke:#1677FF,stroke-width:4px,stroke-dasharray:8 4
 ```
 
-*图注：虚线区分请求与响应，方向由箭头表示；粗实线是对象字节，A 写 R1、B 从 R1 读，字节都不经过 Master。*
-
-**Master 维护的是数据的位置与状态，对象数据在 Client 之间传输。**
+*图注：R1 由 Master 分配，位于目标 Segment 内；对象字节由 Client 侧的 Transfer Engine 在 A、B 与 R1 之间搬运，Master 不在数据路径上。*
 
 ## 一次写、一次读：申请、搬运、提交、查询、加载
 
@@ -73,25 +74,6 @@ flowchart TB
 这个顺序解决了一个关键问题：**空间已经分配，不代表里面的数据已经完整；数据已经搬完，也不代表读方可以使用。**
 
 第3篇会把"搬运完成"与"提交可见"这两个时刻拆开；第4篇会解释读保护到期后，为什么读回字节仍可能被拒绝。
-
-*配图2：一次写入与一次读取的时序。*
-
-```mermaid
-sequenceDiagram
-    participant A as 实例 A
-    participant M as Master
-    participant B as 实例 B
-    participant R1 as 副本 R1
-    A->>M: 申请写入 K
-    M-->>A: 分配 R1
-    A->>R1: 搬运数据（字节写入）
-    A->>M: 提交写入
-    B->>M: 查询 K
-    M-->>B: 返回 R1 描述与读保护
-    R1->>B: 返回数据（字节读取）
-```
-
-*图注：复用成立的前提是同一 key、缓存格式兼容，且推理框架把数据真正加载进自己的 KV cache。图为普通成功路径，不展开失败与重试。*
 
 ## 两类元数据，各管一层
 

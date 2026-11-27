@@ -20,27 +20,20 @@ A 算完一段前缀 KV，准备把它写入 R1。源数据在 A 的主机内存
 
 这些准备通常可以复用。不能把每个数据请求都理解成重新注册内存、重新建立全部连接。对于同一个 Segment 和同一组 QP，后续请求主要是在已有连接上提交新的 WR。
 
-*配图1：准备阶段与数据阶段。*
+*配图1：连接与内存准备。*
 
 ```mermaid
 sequenceDiagram
-    participant RT as 远端 TE（R1 所在节点）
-    participant LT as A 的本地 TE（软件）
-    participant LR as 本地 RNIC
-    participant RR as 远端 RNIC
-    participant RM as R1 的远端已注册内存
-    RT->>RT: 注册 R1 目标内存
-    LT->>LT: 注册 A 的本地 buffer
-    LT->>RT: 获取连接与访问描述（addr / rkey）
-    Note over LT,RT: QP 状态就绪，连接可复用
-    LT->>LR: 提交 WR（软件控制动作）
-    LR->>RR: RDMA WRITE 搬运字节（网卡数据方向）
-    RR->>RM: DMA 写入 R1 的已注册内存
-    LR-->>LT: CQE（本地完成）
-    LT->>LT: poll CQ，按 wr_id 更新 slice / task 状态
+    participant L as 本地 TE
+    participant R as 远端 TE
+    L->>L: 注册 buffer
+    R->>R: 注册目标内存
+    L->>R: 交换连接信息
+    R-->>L: addr / rkey
+    Note over L,R: QP 就绪；连接可复用
 ```
 
-*图注：准备阶段由两端 TE 参与；数据阶段只有两端的 RNIC 搬运字节，远端 TE 软件不逐次接收 WRITE 数据。完成事件由本地 TE 从本地 CQ 观察。握手与元数据交换方式依配置而异，图中省略了独立 metadata server。*
+*图注：准备阶段由两端 TE 参与；交换的是 Segment、远端地址与访问凭据。同一 Segment 与同一组 QP 的准备可以复用，不必为每个请求重新注册或建连。*
 
 ## 提交：本地 TE 把 slice 变成 WR
 
@@ -63,6 +56,24 @@ WR 描述希望网卡执行的工作。在这条固定路径上，`RdmaEndPoint:
 一次 poll 最多取 64 个 CQE。即使每个 WR 都设置了 `IBV_SEND_SIGNALED`，上层看到的也是 CQE 批量回收后映射到 slice，再由 slice 聚合到 task，不意味着每个 WR 都由上层单独处理一个事件。
 
 这里观察的是**本地完成**：本地 RNIC 已经回收这次 WRITE 的完成事件。远端应用是否已经处理这块内存，不在这个 CQE 的语义里。
+
+*配图2：一次 WRITE 与本地完成。*
+
+```mermaid
+flowchart TB
+    BUF["本地已注册 buffer<br/>（lkey）"]
+    LT["本地 TE<br/>构造并提交 WR"]
+    LR["本地 RNIC"]
+    RR["远端 RNIC"]
+    RM["R1 已注册内存<br/>（remote addr / rkey）"]
+    BUF -->|"网卡读取源字节"| LR
+    LT -->|"ibv_post_send<br/>（软件提交）"| LR
+    LR ==>|"RDMA WRITE：对象字节"| RR
+    RR ==>|"DMA 写入"| RM
+    LR -.->|"CQE：本地完成"| LT
+```
+
+*图注：软件提交发生在本地 TE 到本地 RNIC；对象字节经 RDMA WRITE 到达远端 RNIC，再 DMA 写入 R1。CQE 只表示本地完成；副本可见性还要等 PutEnd（第3篇）。*
 
 这就形成一条流水线：
 

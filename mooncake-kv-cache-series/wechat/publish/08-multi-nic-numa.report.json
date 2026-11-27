@@ -1,0 +1,22 @@
+{
+  "source": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/08-multi-nic-numa.html-src.md",
+  "output": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/08-multi-nic-numa.html",
+  "title": "第8篇｜源内存在 NUMA 0，两张网卡分属两个 NUMA：这次 RDMA 走哪张？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 5,
+    "paragraphs": 27,
+    "list_items": 19,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "words": 1635,
+    "read_minutes": 4
+  },
+  "warnings": []
+}

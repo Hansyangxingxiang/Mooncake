@@ -5,17 +5,17 @@
   "params": {
     "accent": "#1677FF",
     "font_size": 16,
-    "line_height": 1.8,
+    "line_height": 1.75,
     "code_bg": "#F4F6F8"
   },
   "stats": {
     "headings": 4,
-    "paragraphs": 32,
+    "paragraphs": 36,
     "list_items": 22,
     "code_blocks": 0,
-    "tables": 2,
-    "images": 2,
-    "words": 2140,
+    "tables": 0,
+    "images": 1,
+    "words": 1959,
     "read_minutes": 5
   },
   "warnings": []
