@@ -80,12 +80,12 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 
 这三步分别对应第二站、第三站和第四站。测试只覆盖 `PROCESSING` 这一种来源；句柄失效、传输端点失效等分支需要对应的运行证据，不能只凭错误码判断。
 
-**源码延伸：**原系列篇1；`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。
+**源码延伸：**`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。
 
 - [Client::Query](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)
 - [MasterService::GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
 - [PROCESSING 副本的测试用例](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4041)
 
-[源码解析版](../../01-source-navigation.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](04-get-and-lease.md) · [下一篇](06-transfer-lifecycle.md)

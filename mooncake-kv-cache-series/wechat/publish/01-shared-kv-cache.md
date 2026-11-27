@@ -78,12 +78,12 @@ Store Master 管业务层：key 对应哪些副本、副本状态、位置与读
 
 这里的共享池解决的是跨实例访问，不等于数据库式持久化。内存副本、SSD 副本和 Master 高可用是三套独立的配置，也要分别验证。
 
-**源码延伸：**原系列篇0；`mooncake-store`、`mooncake-transfer-engine`。版本基线为 `v0.3.13.post1`。
+**源码延伸：**`mooncake-store`、`mooncake-transfer-engine`。版本基线为 `v0.3.13.post1`。
 
 - [Client 初始化参数](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/real_client.h#L85)
 - [Store 设计：Master 不接管数据流](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/docs/source/design/store/mooncake-store.md#L76)
 - [Transfer Engine 设计：Segment 抽象](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/docs/source/design/transfer-engine/index.md#L21)
 
-[源码解析版](../../00-architecture-overview.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [下一篇：同一个 key 可以对应多个副本，每个副本究竟占用哪段内存？](02-objects-and-replicas.md)

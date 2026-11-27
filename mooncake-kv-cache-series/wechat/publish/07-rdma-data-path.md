@@ -78,11 +78,11 @@ RDMA 可以减少传统网络栈中的部分 CPU 搬运，但应用是否存在 
 
 CQE 成功只证明本地完成，不证明 Store 可见；要让读方查到副本，还需要 `PutEnd` 把状态翻成 `COMPLETE`。RDMA 省掉的是传统网络栈中的部分 CPU 搬运，"零拷贝"不能外推为整条 GPU 或应用路径都没有拷贝。
 
-**源码延伸：**原系列篇6；RDMA transport、endpoint、worker pool、WR/CQE 处理。版本基线为 `v0.3.13.post1`。
+**源码延伸：**RDMA transport、endpoint、worker pool、WR/CQE 处理。版本基线为 `v0.3.13.post1`。
 
 - [RdmaEndPoint::submitPostSend](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_endpoint.cpp#L915) · [IBV_WR_RDMA_WRITE / IBV_SEND_SIGNALED](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_endpoint.cpp#L972)
 - [WorkerPool CQ poll](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L599) · [Slice::markSuccess / markFailed](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transport/transport.h#L206)
 
-[源码解析版](../../06-rdma-data-path.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](06-transfer-lifecycle.md) · [下一篇](08-multi-nic-numa.md)

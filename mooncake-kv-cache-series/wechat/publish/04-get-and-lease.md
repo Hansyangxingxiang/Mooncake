@@ -99,13 +99,13 @@ lease 到期只代表保护窗口结束，不代表对象立刻被删除。有�
 
 经 `Client::Get` 的读取，接受结果的条件是：传输成功、可选 checksum 通过、lease 未过期。字节到达本地 buffer 只是第一个条件；`LEASE_EXPIRED` 表示这次结果不再受读保护，不等于数据损坏，也不等于 R1 空间已经回收。
 
-**源码延伸：**原系列篇3；`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。
+**源码延伸：**`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。
 
 - [Client::Get](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1352) · [IsLeaseExpired](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/client_service.h#L60)
 - [Client::Query（lease 起点）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)
 - [SelectBestReplica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica_selection.h#L123)
 - [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [RealClient::get_buffer_internal（LOCAL_DISK 分支）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L2815)
 
-[源码解析版](../../03-get-path.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](03-put-visibility.md) · [下一篇](05-source-reading.md)

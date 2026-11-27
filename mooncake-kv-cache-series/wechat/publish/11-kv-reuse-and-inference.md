@@ -99,8 +99,8 @@ KV 对象较大、介质较慢或并发很高时，读取成本也可能上升�
 
 判断收益要固定模型、请求、前缀长度、并发与批次，记录实际命中 token 数、实际读取字节和请求侧 TTFT。本文没有 GPU 端到端测量，也没有固定并验证 connector 版本；"加载比重算划算"只在其余条件相同、各阶段串行的假设下成立，实际结论以相同负载的测量为准。
 
-**源码延伸：**原系列篇10；Mooncake Python 绑定及 vLLM 集成文档。Mooncake 基线为 `v0.3.13.post1`；vLLM connector 的实际接口与失败恢复行为尚未按固定版本验证。
+**源码延伸：**Mooncake Python 绑定及 vLLM 集成文档。Mooncake 基线为 `v0.3.13.post1`；vLLM connector 的实际接口与失败恢复行为尚未按固定版本验证。
 
-[源码解析版](../../10-vllm-integration.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](10-ssd-tiering.md)

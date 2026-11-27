@@ -86,12 +86,12 @@
 
 `BatchBusy` 或其他错误都表示 batch 仍存在；此时请求描述、数据 buffer 和 BatchID 还要继续管理。错误已报告，设备可能仍在访问，这正是过早释放会变成偶现问题的原因。
 
-**源码延伸：**原系列篇5；`allocateBatchID`、`submitTransfer`、状态查询与 `freeBatchID`。版本基线为 `v0.3.13.post1`。
+**源码延伸：**`allocateBatchID`、`submitTransfer`、状态查询与 `freeBatchID`。版本基线为 `v0.3.13.post1`。
 
 - [TransferEngine::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transfer_engine.h#L213) · [Status::BatchBusy](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/common/base/status.h#L175) · [BatchID 类型](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transport/transport.h#L53)
 - [MultiTransport::submitTransfer](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L130) · [MultiTransport::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L108)
 - [MultiTransport::getBatchTransferStatus](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L363)
 
-[源码解析版](../../05-transfer-engine-task-lifecycle.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](05-source-reading.md) · [下一篇](07-rdma-data-path.md)

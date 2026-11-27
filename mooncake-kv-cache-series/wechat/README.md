@@ -1,24 +1,24 @@
 # Mooncake KV Cache 微信公众号系列
 
-本目录保存从聊天发布稿整理的 11 篇 Markdown 文章，采用公众号阅读顺序独立编号。源码解析版保留在[上一级目录](../README.md)，其篇号与本目录不同。
+本目录保存从聊天发布稿整理的 11 篇 Markdown 文章，采用公众号阅读顺序独立编号。
 
 稿件减少代码行号和长代码块，以问题、图解、设计取舍和故障场景组织内容。本文档是编辑说明，不是公众号文章正文。
 
 ## 阅读与发布顺序
 
-| 篇次 | 文章 | 对应源码解析版 |
-|---|---|---|
-| 1 | [同样的 1,024 个前缀 token，第二台推理实例还要重算吗？](01-shared-kv-cache.md) | [篇0：架构总览](../00-architecture-overview.md) |
-| 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) | [篇4：核心数据结构](../04-core-data-structures.md) |
-| 3 | [KV 已经写到远端，Mooncake 什么时候才让其他实例读？](03-put-visibility.md) | [篇2：Put 路径](../02-put-path.md) |
-| 4 | [KV 已经读回本地，这次 Get 为什么还会返回 LEASE_EXPIRED？](04-get-and-lease.md) | [篇3：Get 路径](../03-get-path.md) |
-| 5 | [Mooncake 报 REPLICA_IS_NOT_READY，应该从哪里查起？](05-source-reading.md) | [篇1：源码导航](../01-source-navigation.md) |
-| 6 | [Transfer Engine 返回成功，数据就传完了吗？](06-transfer-lifecycle.md) | [篇5：TE 生命周期](../05-transfer-engine-task-lifecycle.md) |
-| 7 | [一次 RDMA WRITE：KV 怎么写到远端，谁来确认传输完成？](07-rdma-data-path.md) | [篇6：RDMA 数据路径](../06-rdma-data-path.md) |
-| 8 | [双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？](08-multi-nic-numa.md) | [篇7：多网卡与 NUMA](../07-multi-nic-numa.md) |
-| 9 | [已经选中要淘汰的 KV，为什么又被跳过了？](09-cache-eviction.md) | [篇8：缓存生命周期](../08-cache-lifecycle.md) |
-| 10 | [KV Cache 已经写进 SSD，为什么其他节点还可能读不到？](10-ssd-tiering.md) | [篇9：SSD 分层](../09-ssd-tiering.md) |
-| 11 | [共享 KV Cache 命中了，首个 token 为什么还可能没变快？](11-kv-reuse-and-inference.md) | [篇10：vLLM 集成](../10-vllm-integration.md) |
+| 篇次 | 文章 |
+|---|---|
+| 1 | [同样的 1,024 个前缀 token，第二台推理实例还要重算吗？](01-shared-kv-cache.md) |
+| 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) |
+| 3 | [KV 已经写到远端，Mooncake 什么时候才让其他实例读？](03-put-visibility.md) |
+| 4 | [KV 已经读回本地，这次 Get 为什么还会返回 LEASE_EXPIRED？](04-get-and-lease.md) |
+| 5 | [Mooncake 报 REPLICA_IS_NOT_READY，应该从哪里查起？](05-source-reading.md) |
+| 6 | [Transfer Engine 返回成功，数据就传完了吗？](06-transfer-lifecycle.md) |
+| 7 | [一次 RDMA WRITE：KV 怎么写到远端，谁来确认传输完成？](07-rdma-data-path.md) |
+| 8 | [双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？](08-multi-nic-numa.md) |
+| 9 | [已经选中要淘汰的 KV，为什么又被跳过了？](09-cache-eviction.md) |
+| 10 | [KV Cache 已经写进 SSD，为什么其他节点还可能读不到？](10-ssd-tiering.md) |
+| 11 | [共享 KV Cache 命中了，首个 token 为什么还可能没变快？](11-kv-reuse-and-inference.md) |
 
 ## 公众号排版
 
@@ -26,7 +26,7 @@
 - 正文建议 16px、行距 1.75、深灰文字；小标题统一蓝色，保持两级层次。
 - 一段解释一个意思，保留短段落和适量加粗，不把整段标成重点。
 - 图注建议 14px 灰色；如增加代码，使用浅灰底并避免横向滚动。
-- 正文不堆文件路径与行号；文末源码延伸指向源码解析版，保留查证入口。
+- 正文不堆文件路径与行号；文末源码延伸保留查证入口。
 - 仓库中的上一篇、下一篇为相对路径；公众号发布时替换为已发布文章的真实链接。
 
 ## 配图使用
@@ -43,7 +43,7 @@
 
 ## 版本与证据边界
 
-Mooncake 基线为原系列采用的 `v0.3.13.post1`，不是对当前 main 的逐行行为承诺。详细的历史行号和源码入口保留在源码解析版；本次稿件整理未新增历史版本构建、硬件测试或端到端验证。
+Mooncake 基线为 `v0.3.13.post1`，不是对当前 main 的逐行行为承诺。详细的历史行号与源码入口不在本系列正文展开；本次稿件整理未新增历史版本构建、硬件测试或端到端验证。
 
 第11篇限于共享 KV 存储与推理复用的职责、成本模型与实验设计，未固定并验证 vLLM commit。具体 connector 的接口调用、调度通知、布局转换、失败重试与重算行为，仍应按对应版本复核。
 

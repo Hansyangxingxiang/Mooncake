@@ -103,12 +103,12 @@ LOCAL_DISK 下沉完成、但通知 Master 出错时，本地已能定位这份�
 
 后续动作修的是不同层：回滚清理本地提交，重启扫描重建本地索引，重新注册重建 Master 侧记录。它们都不能单独消除"已登记但本地回滚"或"本地有、Master 不知道"的窗口。本篇只讨论 LOCAL_DISK bucket 路径；其他磁盘或 DFS 路径不能直接套用，文件存在也不等于掉电持久。
 
-**源码延伸：**原系列篇9；FileStorage、存储后端、offload、promotion 与重新注册。版本基线为 `v0.3.13.post1`。
+**源码延伸：**FileStorage、存储后端、offload、promotion 与重新注册。版本基线为 `v0.3.13.post1`。
 
 - [BatchOffload 本地索引提交](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1809) · [complete_handler 与回滚](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1865)
 - [NotifyOffloadSuccess](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7365) · [LOCAL_DISK 副本写入](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7460)
 - [FileStorage::Init](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L131) · [ReRegisterOffloadedObjects](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L1195)
 
-[源码解析版](../09-ssd-tiering.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](09-cache-eviction.md) · [下一篇](11-kv-reuse-and-inference.md)

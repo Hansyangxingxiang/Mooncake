@@ -70,12 +70,12 @@ hard pin 与 soft pin 也不能混为一谈。hard pin 直接阻止淘汰；soft
 
 读 lease、hard pin、soft pin 和后台引用计数保护的不是同一件事。淘汰 MEMORY 副本也不等于删除对象：只要还有 LOCAL_DISK/DFS 副本，元数据仍可能有效；触发淘汰也不等于立即释放空间。下沉如何完成、内存副本何时回收，见第10篇。
 
-**源码延伸：**原系列篇8；lease、pin、census、驱逐重检与元数据清理。版本基线为 `v0.3.13.post1`。
+**源码延伸：**lease、pin、census、驱逐重检与元数据清理。版本基线为 `v0.3.13.post1`。
 
 - [GetReplicaList / 读 lease](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [GrantReadLease](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/master_service.h#L1322)
 - [BatchEvict census](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L9954) · [驱逐前重检](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L10530) · [IsEvictableMemoryReplica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3570)
 - [EraseMetadata](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L10550) · [默认参数（10s / 30min / allow_evict）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/conf/master.json#L10)
 
-[源码解析版](../../08-cache-lifecycle.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](08-multi-nic-numa.md) · [下一篇](10-ssd-tiering.md)

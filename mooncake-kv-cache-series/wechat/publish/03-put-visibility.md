@@ -130,13 +130,13 @@ B 此时查询 K，能拿到 R1 的描述。A 看到的"重试成功"表示"对�
 
 同 key 再次 Put 是另一条路径。只要已有 `COMPLETE` 副本或仍在 discard 窗口内，`PutStart` 返回 `OBJECT_ALREADY_EXISTS`，`Client::Put` 直接当成功返回，本次 buffer 不写入。看到"Put 成功"，要区分它表示"首次提交成功"还是"对象已存在"。
 
-**源码延伸：**原系列篇2；`Client::Put`、`PutStart`、`PutEnd`、`PutRevoke`、`GetReplicaList`、`IsReplicaReadable`。版本基线为 `v0.3.13.post1`。
+**源码延伸：**`Client::Put`、`PutStart`、`PutEnd`、`PutRevoke`、`GetReplicaList`、`IsReplicaReadable`。版本基线为 `v0.3.13.post1`。
 
 - [Client::Put](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1853) · [对已存在 key 的提前返回](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1887)
 - [PutStart](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L4292) · [PutEnd](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L4509) · [PutRevoke](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L4776)
 - [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)
 - [discard / release 超时默认值](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/types.h#L119)
 
-[源码解析版](../../02-put-path.md) · [系列目录与排版说明](README.md)
+[系列目录与排版说明](README.md)
 
 [上一篇](02-objects-and-replicas.md) · [下一篇](04-get-and-lease.md)
