@@ -14,15 +14,15 @@ Master 在返回可读副本列表时授予租约，并在响应里带上 TTL。
 
 下面按相对时间展开这次慢读。假设租约 TTL 是 200 ms——这个数值只用于示意，不是默认配置：
 
-*配图 1：一次跨过租约到期的读取时间线。*
+*配图 1：一次跨过租约截止时间的读取。*
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 12, "rankSpacing": 18}}}%%
 flowchart TB
-    T0["t = 0<br/>查询前记录本地起点<br/>发出查询"]
-    T1["t = 10 ms<br/>收到 R1 描述与 TTL<br/>（示例 200 ms）<br/>截止 = 本地起点 + TTL"]
-    T2["t = 200 ms<br/>保护窗口到期<br/>（示例 TTL）"]
-    T3["t = 260 ms<br/>字节到达本地缓冲区<br/>随后客户端检查<br/>→ LEASE_EXPIRED"]
+    T0["t = 0<br/>记录本地计时起点<br/>随后发出查询 RPC"]
+    T1["收到查询响应<br/>取得副本描述与 TTL<br/>（查询耗时占用窗口）<br/>截止 = 本地起点 + TTL"]
+    T2["t = 200 ms<br/>租约到期（示例 TTL）<br/>保护窗口结束"]
+    T3["t = 260 ms<br/>数据全部到达本地缓冲区<br/>传输结束，客户端检查租约<br/>→ LEASE_EXPIRED"]
 
     T0 --> T1 --> T2 --> T3
 
@@ -30,7 +30,7 @@ flowchart TB
     style T3 stroke:#C2410C,stroke-width:4px,font-weight:bold,fill:#FFF4EC
 ```
 
-*图注：橙色虚线框是 200 ms 的租约到期点；260 ms 时字节才到达本地缓冲区，随后客户端检查租约并返回 `LEASE_EXPIRED`。*
+*图注：客户端发出查询 RPC 前记录计时起点；橙色虚线框是示例中 200 ms 的租约到期点。数据在 260 ms 时才全部到达本地缓冲区，客户端随后检查租约并返回 `LEASE_EXPIRED`。到期只表示保护窗口结束，不表示 R1 已被回收。*
 
 时间线里有两个不同的时刻：200 ms 是租约到期，260 ms 是传输完成。到期点由客户端记录的起点加上 Master 给出的 TTL 算出；传输何时完成，由本地读取决定。最后做检查的是客户端：`Client::Get` 先 `TransferRead`（或 `ReadDfsReplica`），再按需校验（checksum），最后检查租约。字节到得再完整，也不能跳过这次检查。
 

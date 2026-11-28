@@ -14,7 +14,7 @@ Mooncake 的 KV Cache 下沉数据已经写进本地 SSD：bucket 的数据文�
 
 淘汰：在满足条件时回收某份副本，常见目标是内存空间。
 
-提升：需要时重新建立内存副本。
+提升（promotion）：需要时重新建立内存副本。
 
 因此，下沉写入成功并完成 Master 登记后，可能出现内存与磁盘副本共存的阶段。
 
@@ -30,10 +30,10 @@ stateDiagram-v2
     [*] --> S1
     S1 --> S2: 下沉并登记成功
     S2 --> S3: 淘汰内存副本
-    S3 --> S2: 可选 promotion
+    S3 --> S2: 磁盘命中后按需提升
 ```
 
-*图注：下沉成功后内存与磁盘副本可能共存；淘汰内存副本后只剩磁盘副本；promotion 是可选动作，不是每次磁盘命中都必须执行。*
+*图注：下沉成功后内存与磁盘副本可能共存；淘汰内存副本后只剩磁盘副本；提升是按需动作，不是每次磁盘命中都必须执行。*
 
 ## 写入与通知的顺序
 
@@ -43,16 +43,23 @@ stateDiagram-v2
 
 本地索引先于 Master 通知，是因为 Master 一旦把读请求指向本节点，`BatchLoad` 必须能立刻在 `object_bucket_map_` 里查到 key。否则会出现“目录说能读，存储节点却找不到”的窗口。
 
-*配图 2：从落盘到 Master 登记。*
+*配图 2：从本地落盘到 Master 登记。*
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 10, "rankSpacing": 18, "diagramPadding": 8}}}%%
 flowchart TB
     D["① 写数据文件"] --> MD["② 写元数据"]
     MD --> I["③ 提交本地索引<br/>（本节点可定位）"]
-    I --> N["④ 通知 Master<br/>成功：可路由读取<br/>错误 / 超时：登记不确定"]
+    I --> N["④ 发出登记通知<br/>NotifyOffloadSuccess"]
+    N -->|收到成功响应| R["⑤ Master 登记结果<br/>已确认，可路由读取"]
+    N -.->|错误 / 超时| U["登记结果不确定<br/>无法确认 Master 登记"]
+    R ~~~ U
+
+    style R stroke:#389E0D,stroke-width:3px,fill:#F6FFED
+    style U stroke:#D46B08,stroke-width:2px,stroke-dasharray:6 4,fill:#FFF7E6
 ```
 
-*图注：数据文件、元数据、本地索引、Master 登记依次完成。通知返回错误或超时时，步骤③已完成，本节点能定位；但仅凭返回值不能确定 Master 是否登记。可路由读取不等于掉电持久，持久性见下文。*
+*图注：写入顺序是先写数据文件、元数据文件，再提交本地索引，随后通知 Master。图中实线表示收到成功响应、Master 登记结果已确认；通知错误或超时时，本节点可以确认本地索引已提交，但仅凭超时无法判断 Master 是否已登记。可路由读取不等于掉电持久，持久性见下文。*
 
 ## 出错当时，四个位置各能确认什么
 
