@@ -13,14 +13,24 @@ Store 返回的副本位置指明 R1 在哪个 Store Segment、要写哪个地�
 *配图1：R1 的内存信息和连接信息。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":18,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    R["远端注册目标内存"] --> M["段描述发布地址范围与 rkey"]
-    M --> L["本地 TE 按 R1 的地址范围查键"]
-    L --> Q["两端 TE 握手准备 QP"]
-    Q --> W["本地 TE 可提交 WR"]
+    S["<b>Store 层：副本描述</b><br/>R1 所在 Segment 与地址范围<br/>（Master 返回的位置）"]:::master
+    R["<b>RDMA 层：注册信息</b><br/>远端内存地址范围 + rkey"]:::client
+    L["<b>本地 TE</b><br/>按 R1 地址范围<br/>查 RDMA 段描述"]:::client
+    Q["<b>两端 TE 握手</b><br/>交换 QP 编号等连接信息"]:::client
+    W["<b>本地 TE 可提交 WR</b><br/>源缓冲区已注册（lkey）"]:::client
+
+    S -.->|"只给位置，不含字节"| L
+    R -.->|"注册信息进入 RDMA 段描述"| L
+    L -->|"得到可用的 rkey"| Q
+    Q -->|"连接就绪"| W
+
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
 ```
 
-*图注：沿一次需要建连的写入追踪准备动作。后续写入可以复用仍然有效的注册与连接。*
+*图注：Store 返回的副本描述只给出 R1 的地址范围；本地 TE 还要在 RDMA 段描述里查到 rkey，并与远端完成 QP 握手，才能提交 WR。两条点线分别表示 Store 位置和注册信息，都不搬运对象字节；字节路径见配图 2。*
 
 ## 本地 TE 把 slice 变成 WR
 
@@ -45,21 +55,29 @@ TE 提交 WR 后，本地 RDMA 网卡（RNIC）读取源字节，经远端 RNIC 
 <!-- 手机发布版配图由 figures/07-rdma-data-path-fig2.dot 渲染；下方 Mermaid 保留作语义参考。 -->
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":20,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.35}"}}%%
 flowchart TB
-    BUF["本地已注册缓冲区<br/>（lkey）"]
-    LT["本地 worker<br/>提交与轮询"]
-    LR["本地 RNIC"]
-    RR["远端 RNIC"]
-    RM["R1 已注册内存<br/>（remote addr / rkey）"]
-    BUF -->|"网卡读取源字节"| LR
-    LT -->|"ibv_post_send<br/>（软件提交）"| LR
-    LR ==>|"RDMA WRITE：对象字节"| RR
+    BUF["<b>本地已注册缓冲区</b><br/>（lkey）"]:::data
+    LT["<b>本地 worker</b><br/>提交 WR、轮询 CQ"]:::client
+    LR["<b>本地 RNIC</b>"]:::topo
+    CQ["<b>本地 CQ</b>"]:::topo
+    RR["<b>远端 RNIC</b>"]:::topo
+    RM["<b>R1 已注册内存（远端）</b><br/>（remote addr / rkey）"]:::data
+
+    LT -->|"① ibv_post_send 提交 WR"| LR
+    BUF ==>|"② 网卡读取源字节"| LR
+    LR ==>|"② RDMA WRITE（对象字节）"| RR
     RR ==>|"DMA 写入"| RM
-    LR -.->|"写入 CQE"| CQ["本地 CQ"]
-    CQ -.->|"worker 轮询"| LT
+    LR -.->|"写 CQE（本地完成）"| CQ
+    LT -.->|"③ 轮询 CQ 取 CQE"| CQ
+
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef topo fill:#F7F9FC,stroke:#5B6B82,stroke-width:1px,stroke-dasharray:4 3,color:#0B1F3A,font-size:15px
+    linkStyle 1,2,3 stroke:#1677FF,stroke-width:3.5px
 ```
 
-*图注：软件提交发生在本地 TE 到本地 RNIC；对象字节经 RDMA WRITE 到达远端 RNIC，再 DMA 写入 R1。CQE 只表示本地观察到这条 WRITE 完成；副本何时可见还要看 `PutEnd` 后的副本状态。*
+*图注：① 是本地 TE 到 RNIC 的软件提交；② 中蓝色粗线表示网卡读取源字节、经 RDMA WRITE 写入 R1，再 DMA 到远端内存；③ 是本地 worker 从 CQ 取完成记录。CQE 只表示本地观察到这条 WRITE 完成，副本何时可读仍取决于 Store 层的 `PutEnd`。*
 
 ## 等额度、提交失败、完成失败
 

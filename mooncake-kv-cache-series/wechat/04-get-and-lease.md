@@ -13,19 +13,24 @@ Master 在返回可读副本列表时为对象授予读租约，响应中含有�
 *配图1：客户端接收 4 MiB 时，本地截止时间已过去。图中 TTL 是示例值。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":14,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    T0["0 ms<br/>B 发出查询"]
-    T1["收到 R1 描述与 TTL<br/>B 开始读取"]
-    T2["200 ms<br/>客户端租约到期"]
-    T3["260 ms<br/>4 MiB 到达本地"]
-    T4["完成检查<br/>LEASE_EXPIRED"]
+    T0["<div style='width:300px;text-align:center'><b>T0 · 0 ms</b><br/>B 的 Client 发出查询 RPC<br/>记录本地单调时钟起点</div>"]:::client
+    T1["<div style='width:300px;text-align:center'><b>T1 · Master 返回</b><br/>过滤出可读副本 R1（COMPLETE）<br/>返回描述 + TTL，授予读租约</div>"]:::master
+    T2["<div style='width:300px;text-align:center'><b>T2 · 200 ms（示例 TTL）</b><br/>客户端截止点到期 = 查询起点 + TTL<br/>Master 不因此立即回收 R1</div>"]:::window
+    T3["<div style='width:300px;text-align:center'><b>T3 · 260 ms</b><br/>4 MiB 到达 B 的缓冲区<br/>TE 传输完成</div>"]:::data
+    T4["<div style='width:300px;text-align:center'><b>T4 · Client::Get 完成检查</b><br/>客户端租约检查：已过期<br/>B 侧返回 LEASE_EXPIRED</div>"]:::error
 
     T0 --> T1 --> T2 --> T3 --> T4
-    style T2 fill:#FFF4EC,stroke:#D46B08,stroke-dasharray:5 3
-    style T4 fill:#FFF4EC,stroke:#C2410C
+
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef window fill:#FFF7ED,stroke:#D46B08,stroke-width:2px,stroke-dasharray:5 3,color:#7C2D12,font-size:15px
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef error fill:#FFF7ED,stroke:#D46B08,stroke-width:1.5px,color:#7C2D12,font-size:15px
 ```
 
-*图注：截止点按 B 的查询起点计算，即使读完后字节完整，B 也不能把这次缓冲区当成成功结果。*
+*图注：截止点由 B 的查询起点加 TTL 算出，图中 TTL 是示例值；即使 4 MiB 完整到达，`Client::Get` 的租约检查仍会返回 `LEASE_EXPIRED`。Master 是否已经回收 R1 需要另查，不能由这个错误推出。*
 
 ## 查询返回的位置，由客户端选择
 

@@ -18,22 +18,24 @@ Mooncake 的缓存接近满载。Master 的淘汰线程扫描对象时，发现 
 *配图1：候选扫描之后插入一次读取。*
 
 ```mermaid
-%%{init: {"sequence": {"width": 66, "actorMargin": 8, "diagramMarginX": 8, "messageMargin": 20}}}%%
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","actorBkg":"#FFFFFF","actorBorder":"#5B6B82","actorTextColor":"#0B1F3A","signalColor":"#5B6B82","signalTextColor":"#0B1F3A","noteBkgColor":"#FFF7ED","noteBorderColor":"#D46B08","noteTextColor":"#7C2D12","activationBkgColor":"#EAF2FF","activationBorderColor":"#1677FF"},"sequence":{"width":72,"actorMargin":10,"diagramMarginX":8,"messageMargin":20}}}%%
 sequenceDiagram
-    participant E as 淘汰
-    participant M as Master
+    participant E as 淘汰线程
+    participant M as Master 目录与租约
     participant B as 读方 B
-    E->>M: 扫描 K
-    M-->>E: 列为候选
-    rect rgb(255, 246, 222)
-    B->>M: 查询 K
-    M-->>B: 授租约
+
+    E->>M: 扫描 K，取 census 快照
+    M-->>E: 列为候选，记录租约截止时间
+    rect rgb(255, 247, 237)
+        B->>M: 查询 K
+        M-->>B: 返回可读 R1，授予读租约
     end
-    E->>M: 重新检查
-    M-->>E: 租约有效
+    E->>M: 驱逐前重新检查
+    M-->>E: 租约未过期，本轮跳过 K
+    Note over E,M: 列为候选不等于已回收
 ```
 
-*图注：黄色区间是候选扫描后插入的读取。B 获得租约后，驱逐前的重查会按更新后的截止时间判断。*
+*图注：黄色区间是候选扫描后插入的读取。B 获得租约后，驱逐前的重查会按更新后的截止时间判断；只有重检通过，才会真正移除副本。*
 
 census 是按分片扫描的统计阶段。普通候选保存分片、租户、key 和租约截止时间。驱逐阶段据此重新定位对象，再检查租约、soft pin 和可淘汰副本。
 

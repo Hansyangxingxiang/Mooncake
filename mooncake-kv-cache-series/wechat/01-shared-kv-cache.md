@@ -45,23 +45,27 @@ B 向谁查询，又从哪里读数据？先把 Master、A、B 和目标 Store S
 <!-- 手机发布版配图由 figures/01-shared-kv-cache-fig1.dot 渲染；下方 Mermaid 保留作语义参考。 -->
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":44,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.35}"}}%%
 flowchart TB
-    M["Master<br/>登记副本与状态"]
-    A["实例 A：Client<br/>内嵌 Transfer Engine"]
-    B["实例 B：Client<br/>内嵌 Transfer Engine"]
-    R1[["目标 Store Segment 内<br/>R1：4 MiB"]]
-    A -.->|"PutStart / PutEnd"| M
-    M -.->|"返回副本描述"| A
-    B -.->|"查询副本"| M
-    M -.->|"返回可读副本给 B"| B
-    A ==>|"写入对象字节"| R1
-    R1 -.->|"读回对象字节"| B
-    linkStyle 2,3 stroke:#D46B08,color:#D46B08,stroke-width:2px
-    linkStyle 4 stroke:#1677FF,stroke-width:4px
-    linkStyle 5 stroke:#1677FF,stroke-width:4px,stroke-dasharray:8 4
+    M["<b>Master 目录</b><br/>登记副本与状态"]:::master
+    A["<b>实例 A：Client</b><br/>内嵌 Transfer Engine"]:::client
+    B["<b>实例 B：Client</b><br/>内嵌 Transfer Engine"]:::client
+    R1["<b>R1</b><br/>目标 Store Segment 内<br/>4 MiB 有效负载"]:::data
+
+    A -.->|"A 提交 PutStart / PutEnd"| M
+    M -.->|"分配 R1 位置"| A
+    B -.->|"B 查询可读副本"| M
+    M -.->|"返回 R1 位置与租约给 B"| B
+    A ==>|"写入对象字节（TE）"| R1
+    R1 ==>|"读回对象字节（TE）"| B
+
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    linkStyle 4,5 stroke:#1677FF,stroke-width:3.5px
 ```
 
-*图注：R1 由 Master 分配，位于目标 Store Segment 内；对象字节由 Client 侧的 Transfer Engine 在 A、B 与 R1 之间搬运，Master 不在数据路径上。*
+*图注：R1 由 Master 分配并位于目标 Store Segment 内；点线只表示申请、提交和查询的控制信息，粗蓝线是 Client 侧 Transfer Engine 搬运的对象字节。推理框架负责识别前缀和最终使用 KV，图中只画它之下的 Store 控制路径与 TE 数据路径；4 MiB 是示意对象 K 的大小，不是 1024 个 token 的固定换算。*
 
 ## 一次写、一次读：申请、搬运、提交、查询、加载
 

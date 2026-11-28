@@ -15,14 +15,24 @@
 *配图1：发往 R1 的写请求如何进入后端。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":14,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    B["Batch · 两条写请求"] --> T["R1 的写入 task"]
-    T --> S["后端拆出的 slice（执行片段）"]
-    S --> W["排队并执行"]
-    W --> Q["按 slice 结果汇总 task"]
+    B["<div style='width:300px;text-align:center'><b>Batch（submitTransfer 已调用）</b><br/>两条写请求：R1、R2<br/>各对应一个 task</div>"]:::client
+    T["<div style='width:300px;text-align:center'><b>R1 的写入 task</b><br/>TE 按 task 跟踪进度</div>"]:::client
+    S["<div style='width:300px;text-align:center'><b>后端 slice（执行片段）</b><br/>TE 后端拆出的执行单元<br/>不是 Store 调用方的 Slice</div>"]:::internal
+    W["<div style='width:300px;text-align:center'><b>排队并执行</b><br/>后端逐段处理 slice</div>"]:::client
+    Q["<div style='width:300px;text-align:center'><b>TE task 完成</b><br/>按 slice 结果汇总<br/>只表示 TE 侧收尾</div>"]:::client
+
+    B -->|"按目标分组"| T
+    T -->|"后端可再拆分"| S
+    S -->|"排队、逐段执行"| W
+    W -->|"全部 slice 收尾"| Q
+
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef internal fill:#F7F9FC,stroke:#5B6B82,stroke-width:1px,stroke-dasharray:4 3,color:#0B1F3A,font-size:15px
 ```
 
-*图注：只展开 R1 这一条 task。R2 对应另一条 task，两个 task 有各自的进度。后端 slice 的段数由后端决定，不由 Store 调用方传入的缓冲区段数决定。*
+*图注：只展开 R1 这一条 task，R2 是另一条 task，两者进度独立。这里的 slice 是 Transfer Engine 后端处理 task 时拆出的执行片段，不是第 2 篇 Store 调用方传入的 Slice；task 完成只表示 TE 侧 slice 全部收尾，写入服务于 Store Put 时，副本可读还要等 `PutEnd`。*
 
 ## 拒绝发生在分派前，还是分派中？
 

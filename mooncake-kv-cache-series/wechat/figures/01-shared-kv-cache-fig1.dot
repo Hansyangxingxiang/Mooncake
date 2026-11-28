@@ -1,30 +1,28 @@
 digraph G {
-  graph [rankdir=TB, bgcolor="white", pad=0.15, nodesep=0.35, ranksep=0.42,
-         fontname="Noto Sans CJK SC"];
-  node [shape=box, style="rounded,filled", fillcolor="#F2F7FF", color="#1677FF",
-        fontcolor="#0B1F3A", fontname="Noto Sans CJK SC", fontsize=26,
-        margin="0.14,0.09"];
-  edge [fontname="Noto Sans CJK SC", fontsize=22, color="#D46B08",
-        fontcolor="#B5480A", penwidth=2, style=dashed, arrowsize=1.0];
+  graph [rankdir=TB, bgcolor="white", pad=0.18, nodesep=0.32, ranksep=0.4,
+         fontname="Noto Sans CJK SC", dpi=180];
+  node [shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#5B6B82",
+        fontcolor="#0B1F3A", fontname="Noto Sans CJK SC", fontsize=15,
+        penwidth=1.5, margin="0.12,0.07"];
+  edge [fontname="Noto Sans CJK SC", fontsize=13, color="#5B6B82",
+        fontcolor="#0B1F3A", penwidth=1.5, style=dashed, arrowsize=0.8];
 
-  M  [label="Master\n登记位置与状态"];
-  A  [label="实例 A"];
-  B  [label="实例 B"];
+  M  [label="Master 目录\n登记副本与状态", fillcolor="#EAF2FF", color="#1677FF", penwidth=1.8];
+  A  [label="实例 A：Client\n内嵌 Transfer Engine"];
+  B  [label="实例 B：Client\n内嵌 Transfer Engine"];
   subgraph cluster_seg {
-    label="目标 Segment";
-    fontname="Noto Sans CJK SC"; fontsize=20; color="#8FA6C8";
-    style="rounded,dashed"; margin=12;
-    R1 [label="R1\n4 MiB", shape=box3d];
+    label="目标 Store Segment";
+    fontname="Noto Sans CJK SC"; fontsize=13; fontcolor="#5B6B82";
+    color="#8FA6C8"; style="rounded,dashed"; margin=26;
+    R1 [label="R1\n4 MiB 有效负载", shape=box3d, fillcolor="#ECFDF5",
+        color="#15803D", penwidth=1.5];
   }
 
-  M -> A [style=invis, weight=10];
-  M -> B [style=invis, weight=10];
+  M -> A [dir=both, label="A 提交 PutStart / PutEnd\n分配 R1 位置"];
+  M -> B [dir=both, label="B 查询可读副本\n返回 R1 位置与租约"];
   { rank=same; A; B; }
-
-  M -> A  [dir=both, label="申请 / 提交"];
-  M -> B  [dir=both, label="查询位置\n返回副本"];
-  A -> R1 [label="写入 KV", style=bold, color="#1677FF",
-           fontcolor="#0B1F3A", penwidth=4];
-  R1 -> B [label="读回 KV", constraint=false, style=bold,
-           color="#1677FF", fontcolor="#0B1F3A", penwidth=4];
+  A -> R1 [label="写入对象字节（TE）", style=bold, color="#1677FF",
+           fontcolor="#0B1F3A", penwidth=3.5, arrowsize=1.0];
+  R1 -> B [label="读回对象字节（TE）", constraint=false, style=bold,
+           color="#1677FF", fontcolor="#0B1F3A", penwidth=3.5, arrowsize=1.0];
 }

@@ -70,18 +70,19 @@ flowchart TB
 *配图2：沿地址增大的方向看 Store Segment 1。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":18,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.35}"}}%%
 flowchart TB
-    B["Store Segment 1 起点<br/>base = 0x10000000"]
-    subgraph S[" "]
-        P["R1 之前的区间<br/>offset = 8 MiB"]
-        R["R1 起点 0x10800000<br/>length = 4 MiB"]
-        Q["R1 之后的区间<br/>从 0x10C00000 起"]
-        P --> R --> Q
-    end
-    E["Store Segment 结束地址<br/>base + 16 MiB"]
-    B --> P
-    Q --> E
-    style R fill:#e8f2ff,stroke:#175a9e,stroke-width:2px,color:#14263c
+    B["<div style='width:300px;text-align:center'><b>Store Segment 1 起点（Master 登记）</b><br/>base = 0x10000000</div>"]:::edge
+    P["<div style='width:300px;text-align:center'><b>R1 之前的区间</b><br/>offset = 8 MiB</div>"]:::topo
+    R["<div style='width:300px;text-align:center'><b>R1</b><br/>起点 0x10800000<br/>length = 4 MiB</div>"]:::data
+    Q["<div style='width:300px;text-align:center'><b>R1 之后的区间</b><br/>从 0x10C00000 起</div>"]:::topo
+    E["<div style='width:300px;text-align:center'><b>Store Segment 1 结束地址</b><br/>base + 16 MiB</div>"]:::edge
+
+    B --> P --> R --> Q --> E
+
+    classDef edge fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef topo fill:#F7F9FC,stroke:#5B6B82,stroke-width:1px,stroke-dasharray:4 3,color:#0B1F3A,font-size:15px
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
 ```
 
 *图注：R1 的起点是 `base + offset`，结束地址是 `base + offset + length`，结束地址本身不属于 R1。三个区间在地址上首尾相接。图中长度未按比例绘制，前后两段的占用情况省略。*

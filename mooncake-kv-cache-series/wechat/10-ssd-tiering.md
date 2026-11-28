@@ -15,12 +15,19 @@
 *配图1：K 从仅有内存副本，到新增 R3，再到仅有 SSD 副本。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":22,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    M["K 的内存副本 R1"] -->|下沉并登记 R3| B["R1 与 R3 共存"]
-    B -->|内存淘汰| D["只剩 SSD 副本 R3"]
+    A["<div style='width:300px;text-align:center'><b>仅有内存副本</b><br/>K 的可读副本：R1</div>"]:::data
+    B["<div style='width:300px;text-align:center'><b>R1 与 R3 共存</b><br/>R1（内存）· R3（SSD）<br/>都在 K 的副本记录中</div>"]:::data
+    D["<div style='width:300px;text-align:center'><b>只剩 SSD 副本</b><br/>K 的可读副本：R3<br/>读回走磁盘路径</div>"]:::data
+
+    A -->|"下沉并登记 R3<br/>Master 目录新增 R3"| B
+    B -->|"内存淘汰 R1<br/>引用与租约允许时实际移除"| D
+
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
 ```
 
-*图注：磁盘副本 R3 登记后，内存副本才进入这条示意路径的后续回收阶段。*
+*图注：磁盘副本 R3 登记后，R1 与 R3 可以共存；R1 要等引用和租约等保护条件允许，才进入这条示意路径的后续回收阶段，图中不表示 R1 一定被回收。*
 
 ## 登记前，磁盘节点先提交索引
 
@@ -31,13 +38,25 @@ bucket 可以容纳多个对象。每个 bucket 有一个 `<bucket_id>.bucket` �
 *配图2：写入、本地索引和 Master 登记的顺序。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":16,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    D["写数据文件"] --> M["写元数据文件"]
-    M --> I["提交本地索引"]
-    I --> N["通知 Master 登记 R3"]
+    D["<div style='width:300px;text-align:center'><b>写 bucket 数据文件</b><br/>K 的 4 MiB 有效负载写入本地 SSD<br/>（.bucket）</div>"]:::client
+    M["<div style='width:300px;text-align:center'><b>写 bucket 元数据文件</b><br/>记录对象在 bucket 内的位置<br/>（.meta）</div>"]:::client
+    I["<div style='width:300px;text-align:center'><b>提交本地索引</b><br/>持盘节点可按 K 定位<br/>bucket、偏移与长度</div>"]:::client
+    N["<div style='width:300px;text-align:center'><b>NotifyOffloadSuccess</b><br/>向 Master 登记 LOCAL_DISK 副本 R3</div>"]:::master
+    T["<div style='width:300px;text-align:center'><b>RPC 超时</b><br/>Master 是否已登记 R3 待确认<br/>查目录中的 K 副本清单</div>"]:::window
+
+    D -->|"先写数据"| M
+    M -->|"后写元数据"| I
+    I -->|"索引就绪后上报"| N
+    N -.->|"超时分支"| T
+
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef window fill:#FFF7ED,stroke:#D46B08,stroke-width:2px,stroke-dasharray:5 3,color:#7C2D12,font-size:15px
 ```
 
-*图注：发出登记通知时，本地索引已经提交。RPC 超时留下的是 Master 侧结果待确认。*
+*图注：发出登记通知时，本地索引已经提交，持盘节点已能定位 K；RPC 超时只说明响应未确认，Master 侧是否登记 R3 要查目录。*
 
 ## 写失败、通知超时、读回失败分别看哪里
 

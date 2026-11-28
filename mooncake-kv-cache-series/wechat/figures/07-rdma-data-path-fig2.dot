@@ -1,39 +1,43 @@
 digraph G {
-  graph [rankdir=TB, bgcolor="white", pad=0.25, nodesep=0.35, ranksep=0.4,
-         fontname="Noto Sans CJK SC"];
-  node [shape=box, style="rounded,filled", fillcolor="#F2F7FF", color="#1677FF",
-        fontcolor="#0B1F3A", fontname="Noto Sans CJK SC", fontsize=24,
-        margin="0.14,0.09"];
-  edge [fontname="Noto Sans CJK SC", fontsize=20, color="#D46B08",
-        fontcolor="#B5480A", penwidth=2, style=dashed, arrowsize=1.0];
+  graph [rankdir=TB, bgcolor="white", pad=0.2, nodesep=0.3, ranksep=0.38,
+         fontname="Noto Sans CJK SC", dpi=180];
+  node [shape=box, style="rounded,filled", fillcolor="#FFFFFF", color="#5B6B82",
+        fontcolor="#0B1F3A", fontname="Noto Sans CJK SC", fontsize=15,
+        penwidth=1.5, margin="0.12,0.07"];
+  edge [fontname="Noto Sans CJK SC", fontsize=13, color="#5B6B82",
+        fontcolor="#0B1F3A", penwidth=1.5, arrowsize=0.8];
 
   subgraph cluster_local {
     label="本地主机";
-    fontname="Noto Sans CJK SC"; fontsize=21; color="#8FA6C8";
-    style="rounded,dashed"; margin=14; labeljust="l";
-    BUF [label="源 buffer\n（lkey）"];
-    W   [label="本地 worker"];
-    LR  [label="本地 RNIC"];
-    CQ  [label="本地 CQ"];
-    { rank=same; BUF; W; BUF -> W [style=invis]; }
-    { rank=same; LR; CQ; LR -> CQ [style=invis]; }
+    fontname="Noto Sans CJK SC"; fontsize=13; fontcolor="#5B6B82";
+    color="#8FA6C8"; style="rounded,dashed"; margin=14; labeljust="l";
+    BUF [label="本地已注册缓冲区\n（lkey）", fillcolor="#ECFDF5", color="#15803D"];
+    W   [label="本地 worker\n提交 WR、轮询 CQ"];
+    LR  [label="本地 RNIC", style="rounded,filled,dashed",
+         fillcolor="#F7F9FC", color="#5B6B82", penwidth=1.0];
+    CQ  [label="本地 CQ", style="rounded,filled,dashed",
+         fillcolor="#F7F9FC", color="#5B6B82", penwidth=1.0];
+    { rank=same; BUF; W; }
+    { rank=same; LR; CQ; }
   }
 
   subgraph cluster_remote {
     label="远端主机";
-    fontname="Noto Sans CJK SC"; fontsize=21; color="#8FA6C8";
-    style="rounded,dashed"; margin=14; labeljust="l";
-    RR [label="远端 RNIC"];
-    R1 [label="R1\n远端已注册内存"];
+    fontname="Noto Sans CJK SC"; fontsize=13; fontcolor="#5B6B82";
+    color="#8FA6C8"; style="rounded,dashed"; margin=14; labeljust="l";
+    RR [label="远端 RNIC", style="rounded,filled,dashed",
+        fillcolor="#F7F9FC", color="#5B6B82", penwidth=1.0];
+    R1 [label="R1 已注册内存\n（remote addr / rkey）",
+        fillcolor="#ECFDF5", color="#15803D"];
   }
 
-  W   -> LR [label="① 提交 WR"];
-  BUF -> LR [label="② 取源字节", style=bold, color="#1677FF",
-              fontcolor="#0B1F3A", penwidth=4];
-  LR  -> CQ [label="CQE", constraint=false, penwidth=1.2, arrowsize=0.8];
-  W   -> CQ [label="③ 轮询 CQ"];
-  LR  -> RR [label="② RDMA WRITE", style=bold, color="#1677FF",
-              fontcolor="#0B1F3A", penwidth=4];
+  W   -> LR [label="① ibv_post_send\n提交 WR", style=solid];
+  BUF -> LR [label="② 网卡读取源字节", style=bold, color="#1677FF",
+              fontcolor="#0B1F3A", penwidth=3.5, arrowsize=1.0];
+  LR  -> CQ [label="写 CQE\n（本地完成）", style=dashed, constraint=false];
+  W   -> CQ [label="③ 轮询 CQ\n取 CQE", style=dashed];
+  LR  -> RR [label="② RDMA WRITE\n（对象字节）", style=bold, color="#1677FF",
+              fontcolor="#0B1F3A", penwidth=3.5, arrowsize=1.0];
   RR  -> R1 [label="DMA 写入", style=bold, color="#1677FF",
-              fontcolor="#0B1F3A", penwidth=4];
+              fontcolor="#0B1F3A", penwidth=3.5, arrowsize=1.0];
 }

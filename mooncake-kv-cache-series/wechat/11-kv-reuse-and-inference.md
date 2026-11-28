@@ -25,15 +25,26 @@ B 可能经历以下步骤。这里用对象 `K` 跟踪一个数据单元，实�
 *配图1：跨请求的 key 查询与加载。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":14,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    A["请求 1 · 实例 A<br/>已有前缀 KV"]
-    R["共享 Store<br/>R1 持有对象 K"]
-    B["请求 2 · 实例 B<br/>需要相同前缀"]
-    A ==>|写入 4 MiB| R
-    R ==>|查到 R1 后读回 4 MiB| B
+    P["<div style='width:300px;text-align:center'><b>前置条件：A 已写入 R1</b><br/>PutStart → 写 4 MiB → PutEnd<br/>R1 副本状态为 COMPLETE</div>"]:::master
+    S1["<div style='width:300px;text-align:center'><b>① 推理框架</b><br/>A、B 识别相同前缀<br/>各自生成或匹配缓存 key K<br/>（只确定 token 范围，不搬字节）</div>"]:::client
+    S2["<div style='width:300px;text-align:center'><b>② Store</b><br/>B 的 Client 向 Master 查询 K<br/>Master 过滤出可读副本 R1<br/>返回位置与读租约（仅元数据）</div>"]:::master
+    S3["<div style='width:300px;text-align:center'><b>③ 客户端 TE</b><br/>从 R1 读回 4 MiB 对象 K<br/>搬进 B 的缓冲区（字节搬运）</div>"]:::data
+    S4["<div style='width:300px;text-align:center'><b>④ 推理框架</b><br/>确认已加载范围可用<br/>把 KV 接入当前请求<br/>（框架使用缓存）</div>"]:::client
+
+    P -.->|"R1 已是可读副本"| S2
+    S1 -->|"按 key 查询"| S2
+    S2 -->|"只返回位置与租约"| S3
+    S3 ==>|"4 MiB 到达缓冲区"| S4
+
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    linkStyle 3 stroke:#1677FF,stroke-width:3.5px
 ```
 
-*图注：箭头表示字节流向。A 调用 `PutEnd` 后，B 按 key 向 Master 查到可读的 R1，才沿第二条箭头读取。*
+*图注：顶部是 A 侧已完成的前置写入，下面按 B 侧复用的顺序列出四个阶段。1024 个 token 是请求前缀量，4 MiB 是示意对象 K 的大小，两者不是固定换算。①、④ 发生在推理框架侧；② 只返回副本位置与租约，不传输 KV 字节；③ 才把对象字节搬进 B 的缓冲区。*
 
 ## 同一请求的 KV 如何交给 Decode？
 
@@ -42,13 +53,18 @@ flowchart TB
 *配图2：同一请求内的 Prefill→Decode 交接。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":18,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    P["Prefill 实例<br/>已生成本请求的 KV"]
-    D["Decode 实例<br/>需要 KV 接续生成"]
-    P ==>|按请求交接 4 MiB| D
+    P["<div style='width:300px;text-align:center'><b>Prefill 实例</b><br/>已生成本请求的 KV</div>"]:::client
+    D["<div style='width:300px;text-align:center'><b>Decode 实例</b><br/>需要这段 KV 接续生成</div>"]:::client
+
+    P ==>|"按当前请求交接 KV 字节<br/>（4 MiB 示意载荷）"| D
+
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    linkStyle 0 stroke:#1677FF,stroke-width:3.5px
 ```
 
-*图注：箭头表示 KV 字节从 Prefill 流向 Decode。交接双方已由当前请求确定。*
+*图注：这是 PD 分离的点对点交接路径，箭头只表示 KV 字节从 Prefill 流向 Decode；与配图 1 的 Store 查询—读回不是同一条路径。发起端和完成确认取决于实际部署的 connector 版本。*
 
 Mooncake 的两份 vLLM 集成指南分别描述了共享池和 PD 直传。图中的箭头表达数据方向，传输由哪端发起、调度器怎样确认完成，要看实际部署的 connector 版本。下文的 TTFT 对照针对 A、B 之间的 Store 共享复用。 [共享池指南](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/docs/source/deployment/integrations/vllm/kv-cache-storage.md#L3-L5) · [PD 指南](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/docs/source/deployment/integrations/vllm/disagg-prefill-decode.md#L3-L5)
 
