@@ -1,0 +1,22 @@
+{
+  "source": "11-kv-reuse-and-inference.md",
+  "output": "11-kv-reuse-and-inference.html",
+  "title": "共享 KV Cache 命中了，首个 token 为什么还可能没变快？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 7,
+    "paragraphs": 27,
+    "list_items": 14,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 2,
+    "words": 2043,
+    "read_minutes": 5
+  },
+  "warnings": []
+}

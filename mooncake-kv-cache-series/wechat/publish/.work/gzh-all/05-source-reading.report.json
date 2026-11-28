@@ -1,8 +1,0 @@
-{
-  "title": "源码阅读番外｜Mooncake 报 REPLICA_IS_NOT_READY，该从哪查起？",
-  "summary": "推理实例 B 查询系列里那个 4 MiB 的示意对象 `K`，收到 `REPLICA_IS_NOT_READY`。在 `v0.3.13.post1` 的单 key 查询路径上，这表示对象元数据存在、可读副本为空，而且还有副本尚未标记移除。要找出具体原因，得看副本状态、句柄和端点。",
-  "source": "../../../05-source-reading.md",
-  "images_to_upload": [],
-  "rendered_with": "Pandoc 3.1.11.1",
-  "editor_title_and_summary_separate": true
-}

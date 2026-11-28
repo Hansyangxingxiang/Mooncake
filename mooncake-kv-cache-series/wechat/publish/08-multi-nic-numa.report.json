@@ -1,0 +1,22 @@
+{
+  "source": "08-multi-nic-numa.md",
+  "output": "08-multi-nic-numa.html",
+  "title": "双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 6,
+    "paragraphs": 28,
+    "list_items": 19,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "words": 1974,
+    "read_minutes": 5
+  },
+  "warnings": []
+}

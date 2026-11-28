@@ -1,0 +1,22 @@
+{
+  "source": "03-put-visibility.md",
+  "output": "03-put-visibility.html",
+  "title": "KV 已经写到远端，Mooncake 什么时候才让其他实例读？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 5,
+    "paragraphs": 22,
+    "list_items": 13,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "words": 1825,
+    "read_minutes": 5
+  },
+  "warnings": []
+}

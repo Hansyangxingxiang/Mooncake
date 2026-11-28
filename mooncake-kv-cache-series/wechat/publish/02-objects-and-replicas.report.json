@@ -1,0 +1,22 @@
+{
+  "source": "02-objects-and-replicas.md",
+  "output": "02-objects-and-replicas.html",
+  "title": "一个 KV Cache 对象，在 Mooncake 里到底怎么放？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 6,
+    "paragraphs": 33,
+    "list_items": 10,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 2,
+    "words": 2126,
+    "read_minutes": 5
+  },
+  "warnings": []
+}

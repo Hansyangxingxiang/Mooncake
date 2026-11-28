@@ -1,0 +1,22 @@
+{
+  "source": "01-shared-kv-cache.md",
+  "output": "01-shared-kv-cache.html",
+  "title": "同样的 1024 个前缀 token，第二台推理实例还要重算吗？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 5,
+    "paragraphs": 27,
+    "list_items": 11,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "words": 1590,
+    "read_minutes": 4
+  },
+  "warnings": []
+}

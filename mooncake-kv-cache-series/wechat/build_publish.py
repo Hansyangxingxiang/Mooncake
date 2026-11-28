@@ -480,6 +480,19 @@ def normalize_inline_code_wrap(html_path: Path) -> None:
         write_atomic(html_path, updated)
 
 
+def sanitize_report_paths(report_path: Path, source_name: str, output_name: str) -> None:
+    """Record publish-relative names instead of absolute local build paths."""
+    if not report_path.exists():
+        return
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    report["source"] = source_name
+    report["output"] = output_name
+    write_atomic(report_path, json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+
+
 def run_md2wx(md2wx: Path, md_path: Path, html_path: Path, title: str, args) -> dict:
     html_src = md_path.with_name(md_path.stem + ".html-src.md")
     html_src.write_text(strip_first_h1(md_path.read_text(encoding="utf-8")), encoding="utf-8")
@@ -512,6 +525,7 @@ def run_md2wx(md2wx: Path, md_path: Path, html_path: Path, title: str, args) -> 
         raise BuildError("md2wx 未生成 HTML")
     normalize_inline_code_wrap(html_path)
     report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+    sanitize_report_paths(report_path, md_path.name, html_path.name)
     return report
 
 
@@ -544,6 +558,7 @@ def build_preview_index(manifest: dict, publish_dir: Path, work_dir: Path, md2wx
     if not html_path.exists():
         raise BuildError("预览首页未生成 HTML")
     report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
+    sanitize_report_paths(report_path, "index.html", "index.html")
     for entry in manifest["articles"]:
         if entry["status"] == "built" and not (publish_dir / f"{entry['slug']}.html").exists():
             raise BuildError(f"预览首页链接缺少目标：{entry['slug']}.html")
@@ -662,7 +677,7 @@ def _visual_review(args) -> dict:
             articles.append(token.zfill(2))
     if not articles:
         return {"status": "not_performed", "articles": []}
-    return {"status": "performed", "articles": articles, "method": "mobile screenshots at 360px"}
+    return {"status": "performed", "articles": articles, "method": "mobile screenshots at 375px"}
 
 
 def build_manifest(args, root: Path, articles: list, selected: list, built_stems: set,
@@ -848,7 +863,7 @@ def render_index(manifest: dict) -> str:
             if review.get("status") == "performed"
             else ""
         )
-        suffix = f"；已人工复核第 {reviewed} 篇的配图、图注与正文排版" if reviewed else ""
+        suffix = f"；已人工复核第 {reviewed} 篇的配图与图注" if reviewed else ""
         lines += [
             f"已在 {widths} 的 Chrome 视口打开全部正式 HTML，检查页面与正文横向溢出、图片加载和表格宽度{suffix}。",
             "",

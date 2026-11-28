@@ -1,0 +1,22 @@
+{
+  "source": "04-get-and-lease.md",
+  "output": "04-get-and-lease.html",
+  "title": "KV 已经读回本地，为什么还会返回 LEASE_EXPIRED？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 5,
+    "paragraphs": 17,
+    "list_items": 7,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "words": 1601,
+    "read_minutes": 4
+  },
+  "warnings": []
+}

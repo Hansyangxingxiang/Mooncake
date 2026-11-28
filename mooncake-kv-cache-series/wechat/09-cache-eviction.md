@@ -18,24 +18,25 @@ Mooncake 的缓存接近满载。Master 的淘汰线程扫描对象时，发现 
 *配图1：候选扫描之后插入一次读取。*
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","actorBkg":"#FFFFFF","actorBorder":"#5B6B82","actorTextColor":"#0B1F3A","signalColor":"#5B6B82","signalTextColor":"#0B1F3A","noteBkgColor":"#FFF7ED","noteBorderColor":"#D46B08","noteTextColor":"#7C2D12","activationBkgColor":"#EAF2FF","activationBorderColor":"#1677FF"},"sequence":{"width":72,"actorMargin":10,"diagramMarginX":8,"messageMargin":20}}}%%
-sequenceDiagram
-    participant E as 淘汰线程
-    participant M as Master 目录与租约
-    participant B as 读方 B
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":16,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
+flowchart TB
+    E1["<div style='width:300px;text-align:center'><b>淘汰线程</b><br/>扫描 K，取 census 快照<br/>列为候选，记录租约截止时间</div>"]:::client
+    W["<div style='width:300px;text-align:center'><b>读方 B 与 Master（插入）</b><br/>B 查询 K<br/>Master 返回可读 R1，授予读租约<br/>截止时间被更新</div>"]:::window
+    E2["<div style='width:300px;text-align:center'><b>淘汰线程</b><br/>处理到 K，驱逐前重新检查<br/>按更新后的租约判断</div>"]:::client
+    M["<div style='width:300px;text-align:center'><b>Master 目录与租约</b><br/>租约未过期<br/>本轮普通淘汰跳过 K</div>"]:::master
+    C["<div style='width:300px;text-align:center'><b>结论</b><br/>列为候选不等于已回收</div>"]:::client
 
-    E->>M: 扫描 K，取 census 快照
-    M-->>E: 列为候选，记录租约截止时间
-    rect rgb(255, 247, 237)
-        B->>M: 查询 K
-        M-->>B: 返回可读 R1，授予读租约
-    end
-    E->>M: 驱逐前重新检查
-    M-->>E: 租约未过期，本轮跳过 K
-    Note over E,M: 列为候选不等于已回收
+    E1 -->|"候选已记录"| W
+    W -->|"新读租约生效"| E2
+    E2 -->|"重新查表"| M
+    M -->|"本次未移除"| C
+
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef window fill:#FFF7ED,stroke:#D46B08,stroke-width:2px,stroke-dasharray:5 3,color:#7C2D12,font-size:15px
 ```
 
-*图注：黄色区间是候选扫描后插入的读取。B 获得租约后，驱逐前的重查会按更新后的截止时间判断；只有重检通过，才会真正移除副本。*
+*图注：橙色卡片是候选扫描后插入的一次读取。B 获得租约后，淘汰线程在驱逐前按更新后的截止时间重查；只有重检通过，才会真正移除副本。*
 
 census 是按分片扫描的统计阶段。普通候选保存分片、租户、key 和租约截止时间。驱逐阶段据此重新定位对象，再检查租约、soft pin 和可淘汰副本。
 

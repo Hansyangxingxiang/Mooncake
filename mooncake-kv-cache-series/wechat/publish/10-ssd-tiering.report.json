@@ -1,0 +1,22 @@
+{
+  "source": "10-ssd-tiering.md",
+  "output": "10-ssd-tiering.html",
+  "title": "KV Cache 已经写进 SSD，为什么其他节点还可能读不到？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 6,
+    "paragraphs": 24,
+    "list_items": 5,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 2,
+    "words": 1911,
+    "read_minutes": 5
+  },
+  "warnings": []
+}

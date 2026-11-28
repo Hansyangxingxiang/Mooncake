@@ -12,7 +12,7 @@
 
 ![配图1：源缓冲区与两张网卡的 NUMA 位置。](images/08-multi-nic-numa-fig1.png)
 
-*图注：两张网卡是示意拓扑中的候选。实际 WR 由哪张卡提交，还要结合设备选择记录与端口计数确认。*
+图注：虚线只表示 NUMA 拓扑上的位置关系——源缓冲区在 NUMA 0，NIC 0 与它同节点，NIC 1 跨节点；两条通往 R1 的虚线都是候选路径，不表示实际选中的发送卡。
 
 ## 先选 transport，再选 HCA
 
@@ -52,7 +52,7 @@ RDMA 内部调整 rail 时，请求仍由 RDMA 后端处理。要确认部署是
 
 - 一台双 NUMA 主机，发送进程绑定 NUMA 0 的 CPU，源缓冲区分配在 NUMA 0；
 - NIC 0 在 NUMA 0，NIC 1 在 NUMA 1；
-- 远端 R1 所在 Segment、传输方向（A 写入 R1）、4 MiB 大小、并发度和连接参数保持一致；
+- 远端 R1 所在 Store Segment、传输方向（A 写入 R1）、4 MiB 大小、并发度和连接参数保持一致；
 - 每次传输前后读取本地两个端口的计数增量，并记录实际选中的本地 HCA（如果有设备选择记录）。
 
 开始比较前，先确认源内存的实际落点。不要只凭分配代码的意图；用分配器记录或系统提供的 NUMA 落点信息确认这段源区间确实在 NUMA 0，再开始比较。
@@ -91,6 +91,6 @@ RDMA 内部调整 rail 时，请求仍由 RDMA 后端处理。要确认部署是
 
 - [重新取远端段描述](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L196) · [运行时重新分派](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L759) · [发布拓扑更新](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L1197)
 
-[系列目录与排版说明](README.md)
+[系列目录与排版说明](index.html)
 
-[上一篇](07-rdma-data-path.md) · [下一篇](09-cache-eviction.md)
+[上一篇](07-rdma-data-path.html) · [下一篇](09-cache-eviction.html)

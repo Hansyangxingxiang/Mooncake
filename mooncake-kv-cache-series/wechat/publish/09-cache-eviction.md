@@ -17,7 +17,7 @@ Mooncake 的缓存接近满载。Master 的淘汰线程扫描对象时，发现 
 
 ![配图1：候选扫描之后插入一次读取。](images/09-cache-eviction-fig1.png)
 
-*图注：黄色区间是候选扫描后插入的读取。B 获得租约后，驱逐前的重查会按更新后的截止时间判断。*
+图注：橙色卡片是候选扫描后插入的一次读取。B 获得租约后，淘汰线程在驱逐前按更新后的截止时间重查；只有重检通过，才会真正移除副本。
 
 census 是按分片扫描的统计阶段。普通候选保存分片、租户、key 和租约截止时间。驱逐阶段据此重新定位对象，再检查租约、soft pin 和可淘汰副本。
 
@@ -56,6 +56,6 @@ K 被扫描为候选后，B 的新读租约让 Master 在驱逐前跳过了它�
 - [下沉入队和强制驱逐](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L10024)
 - [EraseMetadata](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L10550) · [默认参数（10 s / 30 min / allow_evict）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/conf/master.json#L10)
 
-[系列目录与排版说明](README.md)
+[系列目录与排版说明](index.html)
 
-[上一篇](08-multi-nic-numa.md) · [下一篇](10-ssd-tiering.md)
+[上一篇](08-multi-nic-numa.html) · [下一篇](10-ssd-tiering.html)

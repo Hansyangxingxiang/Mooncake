@@ -12,13 +12,13 @@ Master 在返回可读副本列表时为对象授予读租约，响应中含有�
 
 ![配图1：客户端接收 4 MiB 时，本地截止时间已过去。图中 TTL 是示例值。](images/04-get-and-lease-fig1.png)
 
-*图注：截止点按 B 的查询起点计算，即使读完后字节完整，B 也不能把这次缓冲区当成成功结果。*
+图注：截止点由 B 的查询起点加 TTL 算出，图中 TTL 是示例值；即使 4 MiB 完整到达，`Client::Get` 的租约检查仍会返回 `LEASE_EXPIRED`。Master 是否已经回收 R1 需要另查，不能由这个错误推出。
 
 ## 查询返回的位置，由客户端选择
 
-Master 在查询时过滤副本，并返回候选位置。直接调用 `Client::Get` 时，函数取列表中的第一个 `COMPLETE` 副本。部分 `RealClient` 入口会先用 `SelectBestReplica` 选出一个候选，再把筛过的描述交给 `Client::Get`。
+Master 在查询时过滤副本，并返回候选位置。直接调用 `Client::Get` 时，函数取列表中的第一个副本状态为 `COMPLETE` 的副本。部分 `RealClient` 入口会先用 `SelectBestReplica` 选出一个候选，再把筛过的描述交给 `Client::Get`。
 
-在本篇的远端内存场景里，如果查询同时返回 R1 和 R2，启用远端内存评分时可以从两者中选分数更低的一份。未启用时，`SelectBestReplica` 选第一个远端内存候选。打分只发生在没有命中本地候选的分支，也只作用于候选内存副本。
+在本篇的远端内存场景里，如果查询同时返回 R1 和 R2，启用远端内存评分时可以从两者中选分数更低的一份。未启用时，`SelectBestReplica` 选第一个远端内存候选。打分只发生在没有本地候选的分支，也只作用于候选内存副本。
 
 选定 R1 后，客户端才发起数据传输。预先分配的缓冲区容量不足 4 MiB 时，全量 `TransferRead` 会返回 `INVALID_PARAMS`。部分 `RealClient` 入口对设备缓冲区还需要主机暂存，是否中转取决于入口、设备和路径。
 
@@ -34,7 +34,7 @@ Master 在查询时过滤副本，并返回候选位置。直接调用 `Client::
 
 ## 先确认错误来自查询还是读取
 
-**查不到或暂时不可读。** Master 以 `OBJECT_NOT_FOUND` 表示当前没有可返回的对象，以 `REPLICA_IS_NOT_READY` 表示对象有副本记录，但目前没有副本通过可读过滤，例如写入仍在 `PROCESSING`。读取函数收到的列表中若没有 `COMPLETE` 候选，也可能返回 `INVALID_REPLICA`。
+**查不到或暂时不可读。** Master 以 `OBJECT_NOT_FOUND` 表示当前没有可返回的对象，以 `REPLICA_IS_NOT_READY` 表示对象有副本记录，但目前没有副本通过可读过滤，例如写入仍在 `PROCESSING`。读取函数收到的列表中若没有副本状态为 `COMPLETE` 的候选，也可能返回 `INVALID_REPLICA`。
 
 **拿到描述后失败。** 保留查询耗时、选中的副本和读取返回值。若接口直接返回 `ErrorCode`，可以分开记录传输、校验和租约错误；若用 `get_buffer_internal` 一类返回指针的路径，多种失败都可能变成空指针，需要结合对应层的日志或指标。
 
@@ -51,6 +51,6 @@ B 从 R1 搬完 4 MiB 后，还要通过适用的校验和租约检查，`Client
 - [TransferRead 过滤过小的缓冲区](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L4497) · [RealClient 的 LOCAL_DISK 全量分支](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L2874)
 - [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [普通 Remove 的租约检查](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L6416)
 
-[系列目录与排版说明](README.md) · [源码阅读番外](05-source-reading.md)
+[系列目录与排版说明](index.html) · [源码阅读番外](05-source-reading.html)
 
-[上一篇](03-put-visibility.md) · [下一篇](06-transfer-lifecycle.md)
+[上一篇](03-put-visibility.html) · [下一篇](06-transfer-lifecycle.html)

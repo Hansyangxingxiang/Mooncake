@@ -42,8 +42,6 @@ B 向谁查询，又从哪里读数据？先把 Master、A、B 和目标 Store S
 
 *配图1：A、B、Master 与 R1 的位置关系。*
 
-<!-- 手机发布版配图由 figures/01-shared-kv-cache-fig1.dot 渲染；下方 Mermaid 保留作语义参考。 -->
-
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":44,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.35}"}}%%
 flowchart TB

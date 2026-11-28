@@ -52,8 +52,6 @@ TE 提交 WR 后，本地 RDMA 网卡（RNIC）读取源字节，经远端 RNIC 
 
 *配图2：一次 WRITE 与本地完成。*
 
-<!-- 手机发布版配图由 figures/07-rdma-data-path-fig2.dot 渲染；下方 Mermaid 保留作语义参考。 -->
-
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":20,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.35}"}}%%
 flowchart TB

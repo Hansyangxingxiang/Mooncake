@@ -28,9 +28,9 @@
 ## 排版与预览
 
 - 一级标题填入公众号标题栏，摘要填入摘要栏，正文从摘要后的开场段开始。正文建议 16 px、行距 1.75，图注建议 14 px。
-- 正文里的 Mermaid 和 `figures/` 下的 Graphviz 文件是图源。主线首篇的配图 1、RDMA 篇的配图 2 使用 DOT 作为手机排版图源，其余使用正文中的 Mermaid。
+- 正文里的 Mermaid 是发布图源，`figures/` 下的 Graphviz 文件留作备用，不参与 `build_publish.py` 导出。
 - 导出后以手机正文宽度检查字号、箭头和图注，再将图片插入公众号编辑器。把上一篇、下一篇等相对链接换成对应的已发布文章链接。
-- 在[发布稿目录](publish/README.md)打开当前版本的 HTML、Markdown 或排版报告。`build_publish.py` 的参数仍按文件索引选篇，整理发布顺序时以本页主线目录为准，并按上述图源导出两张 DOT 图。
+- 在[发布稿目录](publish/README.md)打开当前版本的 HTML、Markdown 或排版报告。`build_publish.py` 的参数仍按文件索引选篇，整理发布顺序时以本页主线目录为准。
 
 ## 版本与证据边界
 

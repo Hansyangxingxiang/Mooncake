@@ -14,7 +14,7 @@
 
 ![配图1：K 从仅有内存副本，到新增 R3，再到仅有 SSD 副本。](images/10-ssd-tiering-fig1.png)
 
-*图注：磁盘副本 R3 登记后，内存副本才进入这条示意路径的后续回收阶段。*
+图注：磁盘副本 R3 登记后，R1 与 R3 可以共存；R1 要等引用和租约等保护条件允许，才进入这条示意路径的后续回收阶段，图中不表示 R1 一定被回收。
 
 ## 登记前，磁盘节点先提交索引
 
@@ -24,7 +24,7 @@ bucket 可以容纳多个对象。每个 bucket 有一个 `<bucket_id>.bucket` �
 
 ![配图2：写入、本地索引和 Master 登记的顺序。](images/10-ssd-tiering-fig2.png)
 
-*图注：发出登记通知时，本地索引已经提交。RPC 超时留下的是 Master 侧结果待确认。*
+图注：发出登记通知时，本地索引已经提交，持盘节点已能定位 K；RPC 超时只说明响应未确认，Master 侧是否登记 R3 要查目录。
 
 ## 写失败、通知超时、读回失败分别看哪里
 
@@ -56,7 +56,7 @@ bucket 可以容纳多个对象。每个 bucket 有一个 `<bucket_id>.bucket` �
 
 K 的 R3 从落盘到可读要经过本地索引、Master 登记、磁盘节点读取和远端搬运。通知超时时先核对目录是否登记了 R3，再去持盘节点确认它是否仍能定位并读取 K。R3 的读回失败与 K 是否还有可用内存副本，是两项不同的判断。
 
-下一篇把同一个 K 带回推理流程，计算一次磁盘命中还剩多少工作。
+下一篇把同一个 K 带回推理流程，计算一次 SSD 副本读回还剩多少工作。
 
 **源码延伸（`v0.3.13.post1`）**
 
@@ -66,6 +66,6 @@ K 的 R3 从落盘到可读要经过本地索引、Master 登记、磁盘节点�
 - [数据文件写入与同步](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L2665)
 - [后端恢复索引](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L2104) · [启动时扫描并上报](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L186) · [心跳触发重新登记](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L703)
 
-[系列目录与排版说明](README.md)
+[系列目录与排版说明](index.html)
 
-[上一篇](09-cache-eviction.md) · [下一篇](11-kv-reuse-and-inference.md)
+[上一篇](09-cache-eviction.html) · [下一篇](11-kv-reuse-and-inference.html)

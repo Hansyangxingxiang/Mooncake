@@ -1,0 +1,22 @@
+{
+  "source": "06-transfer-lifecycle.md",
+  "output": "06-transfer-lifecycle.html",
+  "title": "Transfer Engine 提交失败后，为什么还不能释放源缓冲区？",
+  "params": {
+    "accent": "#1677FF",
+    "font_size": 16,
+    "line_height": 1.75,
+    "code_bg": "#F4F6F8"
+  },
+  "stats": {
+    "headings": 5,
+    "paragraphs": 18,
+    "list_items": 6,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "words": 1464,
+    "read_minutes": 4
+  },
+  "warnings": []
+}
