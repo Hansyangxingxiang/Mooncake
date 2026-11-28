@@ -15,21 +15,21 @@ A 发起一次主机内存到 R1 的传输。拓扑上更近的网卡，未必�
 *配图 1：源缓冲区与两张网卡的 NUMA 位置。*
 
 ```mermaid
-%%{init: {"flowchart": {"rankSpacing": 16, "nodeSpacing": 20}}}%%
+%%{init: {"themeVariables": {"fontSize": "26px"}, "flowchart": {"rankSpacing": 16, "nodeSpacing": 20}}}%%
 flowchart TB
     subgraph N0[" "]
         T0["NUMA 0"]
         M0["A 的源缓冲区"]
         H0["NIC 0"]
         T0 ~~~ M0
-        M0 --- H0
+        M0 ~~~ H0
     end
     subgraph N1[" "]
         T1["NUMA 1"]
         M1["NUMA 1 内存"]
         H1["NIC 1"]
         T1 ~~~ M1
-        M1 --- H1
+        M1 ~~~ H1
     end
     P["远端 R1 Segment"]
     M0 -.->|"跨 NUMA 访问"| H1
@@ -39,7 +39,7 @@ flowchart TB
     style T1 fill:none,stroke:none,color:#0B1F3A,font-weight:bold
 ```
 
-*图注：发送进程与源缓冲区均在 NUMA 0，NIC 0 同节点、NIC 1 跨 NUMA；实线箭头是两张 NIC 到 R1 的候选路径。本文尚未实测，不标实际选中路径。*
+*图注：发送进程与源缓冲区均在 NUMA 0，NIC 0 同节点、NIC 1 跨 NUMA；虚线表示源缓冲区到 NIC 1 的跨 NUMA 访问，实线箭头是两张 NIC 到 R1 的候选路径。本文尚未实测，不标实际选中路径。*
 
 这只是“更近”的答案，不是“一定用它”的答案。真正选择时，Mooncake 还要看源地址落在哪段注册内存里、哪些 HCA 的 context 可用、远端是否有对应的 rkey 和 rail。
 
