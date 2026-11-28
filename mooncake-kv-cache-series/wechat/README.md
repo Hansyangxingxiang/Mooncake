@@ -11,8 +11,8 @@
 | 1 | [同样的 1024 个前缀 token，第二台推理实例还要重算吗？](01-shared-kv-cache.md) |
 | 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) |
 | 3 | [KV 已经写到远端，Mooncake 什么时候才让其他实例读？](03-put-visibility.md) |
-| 4 | [KV 已经读回本地，这次 Get 为什么还会返回 LEASE_EXPIRED？](04-get-and-lease.md) |
-| 5 | [Mooncake 报 REPLICA_IS_NOT_READY，应该从哪里查起？](05-source-reading.md) |
+| 4 | [KV 已经读回本地，为什么还会返回 LEASE_EXPIRED？](04-get-and-lease.md) |
+| 5 | [Mooncake 报 REPLICA_IS_NOT_READY，该从哪查起？](05-source-reading.md) |
 | 6 | [Transfer Engine 返回成功，数据就传完了吗？](06-transfer-lifecycle.md) |
 | 7 | [一次 RDMA WRITE：KV 怎么写到远端，谁来确认传输完成？](07-rdma-data-path.md) |
 | 8 | [双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？](08-multi-nic-numa.md) |
@@ -37,14 +37,14 @@
 
 “配图”说明用于标识插图位置；发布时用导出的图片替换代码块，并保留有解释作用的图注。原理图不表达未经验证的性能倍数。
 
-第 1 篇配图1 与第 7 篇配图2 需要固定上下位置和就近标注，Mermaid 自动布局无法稳定满足手机单栏阅读，已改用 `figures/*.dot`（Graphviz）作为图源，并导出到 `publish/images/`。其余配图仍以正文中的 Mermaid 块为图源。本轮标题与正文修订直接落在 `publish/` 发布稿，源稿正文尚未逐段回填；重跑完整构建前需先同步，否则会覆盖发布稿正文。
+第 1 篇配图 1 与第 7 篇配图 2 需要固定上下位置和就近标注，Mermaid 自动布局无法稳定满足手机单栏阅读，已改用 `figures/*.dot`（Graphviz）作为图源，并导出到 `publish/images/`。其余配图仍以正文中的 Mermaid 块为图源。`publish/` 发布稿与源稿正文尚未逐段同步；重跑完整构建前需先核对，否则会覆盖发布稿正文。
 
-11 篇均已由 `build_publish.py` 生成 `publish/` 目录下的发布稿 Markdown 与 PNG，其中第 1 篇配图1 与第 7 篇配图2 的 PNG 改用 `dot` 从上述 `.dot` 图源渲染。`publish/` 下的 HTML、report.json 与 manifest.json 已删除；如需本地预览，需要重新运行完整构建，但完整构建会用 Mermaid 版覆盖这两张 DOT 渲染的 PNG，之后须按前文命令重新导出。此前的 360px、390px Chrome 视口检查和第 1、3、4、6、7、10 篇人工复核针对已删除的旧 HTML，不能代表当前 Markdown。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
+11 篇均已由 `build_publish.py` 生成 `publish/` 目录下的发布稿 Markdown 与 PNG，其中第 1 篇配图 1 与第 7 篇配图 2 的 PNG 改用 `dot` 从上述 `.dot` 图源渲染。`publish/` 下的 HTML、report.json 与 manifest.json 已删除；如需本地预览，需要重新运行完整构建，但完整构建会用 Mermaid 版覆盖这两张 DOT 渲染的 PNG，之后须按前文命令重新导出。此前的 360px、390px Chrome 视口检查和第 1、3、4、6、7、10 篇人工复核针对已删除的旧 HTML，不能代表当前 Markdown。本轮未向公众号发布，未做微信编辑器粘贴预览，也未上传公众号素材库。
 
 ## 版本与证据边界
 
 Mooncake 基线为 `v0.3.13.post1`，不是对当前 main 的逐行行为承诺。详细的历史行号与源码入口不在本系列正文展开；本次稿件整理未新增历史版本构建、硬件测试或端到端验证。
 
-第11篇限于共享 KV 存储与推理复用的职责、成本模型与实验设计，未固定并验证 vLLM commit。具体 connector 的接口调用、调度通知、布局转换、失败重试与重算行为，仍应按对应版本复核。
+第 11 篇限于共享 KV 存储与推理复用的职责、成本模型与实验设计，未固定并验证 vLLM commit。具体 connector 的接口调用、调度通知、布局转换、失败重试与重算行为，仍应按对应版本复核。
 
 引用性能数据时补齐硬件、模型、负载、命中长度、并发与版本；不要从单一带宽数字推导端到端 TTFT 收益。

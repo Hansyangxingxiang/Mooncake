@@ -12,7 +12,7 @@
 
 Mooncake 要解决的，就是让这段 KV 从“某个推理实例的私有状态”，变成其他实例也能找到并读取的共享数据。
 
-这里说的是跨实例复用已写入共享池的前缀 KV；Prefill 实例把本轮请求的 KV 直接交给 Decode 实例，是另一种按请求协调的交接，留到第11篇。
+这里说的是跨实例复用已写入共享池的前缀 KV；Prefill 实例把本轮请求的 KV 直接交给 Decode 实例，是另一种按请求协调的交接，留到第 11 篇。
 
 ## A 算过的 KV，B 为什么可能用不上？
 
@@ -24,7 +24,7 @@ A 算出的 KV 默认属于 A 的推理进程。请求结束后，它可以被�
 
 1. 推理框架识别可复用的 token 范围，定出这段前缀的缓存 key `K`；等数据到了，再判断哪些 KV 能给当前请求用。
 2. Mooncake Store 按 `K` 记下对象、副本位置和可读状态，B 靠它查到该读哪一份数据。
-3. Transfer Engine 把副本 R1 的字节搬进 B 指定的 buffer。
+3. Transfer Engine 把副本 R1 的字节搬进 B 指定的缓冲区。
 
 Mooncake 提供 Store 和 Transfer Engine；识别前缀、生成 key、最终加载进推理引擎，仍由框架和 connector 完成。
 
@@ -42,7 +42,7 @@ Client 的角色有两个。它既能代表应用发起读写，也能贡献一�
 
 B 向谁查询，又从哪里读数据？先把 Master、A、B 和目标 Segment 中 R1 的位置摆清楚。
 
-![配图1：Master、A、B 与目标 Segment 内 R1 的位置关系。](images/01-shared-kv-cache-fig1.png)
+![配图 1：Master、A、B 与目标 Segment 内 R1 的位置关系。](images/01-shared-kv-cache-fig1.png)
 
 图注：Master 返回副本位置，KV 字节由客户端直接写入或读出 R1；Master 不在数据路径上。
 
@@ -52,21 +52,21 @@ B 向谁查询，又从哪里读数据？先把 Master、A、B 和目标 Segment
 
 1. 申请：A 向 Master 发起 `PutStart`，申请写入 key `K`。
 2. 搬运：Master 分配副本 R1，A 通过 Transfer Engine 把数据写到 R1。
-3. 提交：A 调用 `PutEnd`，告诉 Master 这份副本已经写完、可以读。
-4. 查询：B 向 Master 查询 `K`，拿到 R1 的描述与读保护。
-5. 加载：B 从 R1 搬运数据，加载进自己的 KV cache。
+3. 提交：A 调用 `PutEnd`；Master 把 R1 从 `PROCESSING` 翻成 `COMPLETE` 后，其他 Client 才能在可读副本列表里发现它。
+4. 查询：B 向 Master 查询 `K`，拿到 R1 的描述与读租约（lease）。
+5. 加载：B 从 R1 搬运数据，加载进自己的 KV Cache。
 
-第 5 步里，Transfer Engine 只负责把字节送到 B 的 buffer；布局是否兼容、这些 KV 能否被调度器用于当前请求，仍由框架判断。B 选择外部加载，等于用一次网络搬运换掉一次 Prefill，是否划算取决于前缀长度、带宽、命中率与并发，第11篇会用 TTFT 展开。
+第 5 步里，Transfer Engine 只负责把字节送到 B 的缓冲区；布局是否兼容、这些 KV 能否被调度器用于当前请求，仍由框架判断。命中省掉的是这段前缀的 Prefill 计算，不等于首个 token 一定更早。B 选择外部加载，等于用一次网络搬运换掉一次 Prefill，是否划算取决于前缀长度、带宽、命中率与并发，第 11 篇会用 TTFT 展开。
 
-这条顺序区分了两个容易混淆的时刻：空间分配出去，只是 Master 记了一笔账，数据未必已经写完整；字节全部搬完，也不代表读方马上可以读。
+这条顺序区分了两个容易混淆的时刻：空间分配出去，只是 Master 记了一笔账，数据未必已经写完整；A 把字节全部搬完，也不代表 B 马上可以读。
 
-第3篇会把“搬运完成”与“提交可见”这两个时刻拆开；第4篇会解释读保护到期后，为什么读回字节仍可能被拒绝。
+第 3 篇会把“搬运完成”与“提交可见”这两个时刻拆开；第 4 篇会解释读租约到期后，为什么读回字节仍可能被拒绝。
 
 ## 两类元数据，各管一层
 
 Mooncake 里有两类元数据，容易混在一起。
 
-Store Master 管业务层：key 对应哪些副本、副本状态、位置与读保护。Transfer Engine 管传输层：连接信息与地址空间信息。
+Store Master 管业务层：key 对应哪些副本、副本状态、位置与读租约。Transfer Engine 管传输层：连接信息与地址空间信息。
 
 传输层的元数据可以交给独立的 metadata service，比如 etcd 或 HTTP 服务；也可以用 `P2PHANDSHAKE` 这类配置直接握手，不必额外部署独立服务。
 

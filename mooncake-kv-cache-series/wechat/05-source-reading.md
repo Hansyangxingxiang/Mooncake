@@ -1,16 +1,16 @@
-# Mooncake 报 REPLICA_IS_NOT_READY，应该从哪里查起？
+# Mooncake 报 REPLICA_IS_NOT_READY，该从哪查起？
 
-**摘要：**推理实例 B 查询 key `K` 却收到 `REPLICA_IS_NOT_READY`。同一个错误码可能来自不同分支；沿查询走四站，看每一站能排除什么、下一步该查什么。
+**摘要：**推理实例 B 查询 key `K` 收到 `REPLICA_IS_NOT_READY`，说明在这个查询时刻 K 的元数据存在，但没有任何副本通过 `IsReplicaReadable`。副本可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效；错误码本身分不出是哪一种，要沿查询路径逐站查证据。
 
-在 Mooncake 里，推理实例 B（下文简称实例 B）查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
+推理实例 B 查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
 
-这个错误容易被直接理解成"对象不存在"或"再等等就好"。但同一个返回码背后，可能是副本还在 `PROCESSING`，也可能是句柄或传输端点失效。只看一行错误日志，分不出是哪一种。
+这个错误容易被直接理解成“对象不存在”或“再等等就好”。但同一个返回码背后，可能是副本还在 `PROCESSING`，也可能是句柄或传输端点失效。只看一行错误日志，分不出是哪一种。
 
-第3篇已经讲过写入可见性：`PutStart` 之后、`PutEnd` 之前，副本停在 `PROCESSING`。这里不再重复系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
+第 3 篇已经讲过写入可见性：`PutStart` 之后、`PutEnd` 之前，副本停在 `PROCESSING`。这里不再重复系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
 
-## 第一站：Client::Query 只把查询交给 Master
+## 第一站：查询入口只把请求交给 Master
 
-B 的查询入口是 [`Client::Query`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)。它在发出 RPC 之前取一次本地 `steady_clock` 起点，然后调用 `master_client_.GetReplicaList(object_key)`，把返回的副本列表、lease 截止时间和 object checksum 组装成 `QueryResult`。
+B 的查询入口是 [`Client::Query`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)。它在发出 RPC 之前取一次本地 `steady_clock` 起点，然后调用 `master_client_.GetReplicaList(object_key)`，把返回的副本列表、读租约（lease）截止时间和 `object_checksum` 组装成 `QueryResult`。
 
 这一站要看的证据是 RPC 返回状态。如果 Master 返回 `REPLICA_IS_NOT_READY`，`Client::Query` 不会在本地把它改写成别的错误，也不会在这里替调用方选副本。
 
@@ -20,9 +20,9 @@ B 的查询入口是 [`Client::Query`](https://github.com/kvcache-ai/Mooncake/bl
 
 进入 [`MasterService::GetReplicaList`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626)，第一道判断是 `accessor.Exists()`。key 不存在时，Master 直接返回 `OBJECT_NOT_FOUND`。
 
-所以，如果 B 收到的是 `REPLICA_IS_NOT_READY`，在这个查询时刻，K 的 `ObjectMetadata` 是存在的。至少可以排除"这个 key 从未写入过"。
+所以，如果 B 收到的是 `REPLICA_IS_NOT_READY`，在这个查询时刻，K 的 `ObjectMetadata` 是存在的。至少可以排除“这个 key 从未写入过”。
 
-这里要注意范围：`OBJECT_NOT_FOUND` 也不总等于"从未存在"。对象可能曾经存在，但所有副本都已经被删除或移除；这条分支在第四站会再出现一次。
+这里要注意范围：`OBJECT_NOT_FOUND` 也不总等于“从未存在”。对象可能曾经存在，但所有副本都已经被删除或移除；这条分支在第四站会再出现一次。
 
 ## 第三站：可读副本是过滤出来的
 
@@ -36,7 +36,7 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 
 如果 R1 是在 `PutStart` 之后、`PutEnd` 之前被查询，它已经分配了地址，也挂在 K 的元数据下面，但状态仍是 `PROCESSING`。第一项检查就不通过。
 
-这一站能排除"对象根本没有副本"：副本结构已经存在，只是不满足可读条件。接下来还要看，过滤后的列表为什么没有变成另一种错误。
+这一站能排除“对象根本没有副本”：副本结构已经存在，只是不满足可读条件。接下来还要看，过滤后的列表为什么没有变成另一种错误。
 
 ## 第四站：空列表最后分成两种错误
 
@@ -45,16 +45,16 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 - 所有副本都是 `REMOVED`：返回 `OBJECT_NOT_FOUND`；
 - 否则：记录 `replica_not_ready` 日志，返回 `REPLICA_IS_NOT_READY`。
 
-因此，`REPLICA_IS_NOT_READY` 还排除了"所有副本都已移除"。它表示列表为空，但至少有一个副本不是 `REMOVED`——可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效。
+因此，`REPLICA_IS_NOT_READY` 还排除了“所有副本都已移除”。它表示列表为空，但至少有一个副本不是 `REMOVED`——可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效。
 
 把这条查询路径压成判断顺序，就是：
 
 1. key 不存在 → `OBJECT_NOT_FOUND`；
-2. key 存在，且存在通过 `IsReplicaReadable` 的副本 → 返回可读副本列表与 lease；
+2. key 存在，且存在通过 `IsReplicaReadable` 的副本 → 返回可读副本列表与读租约；
 3. key 存在，没有可读副本，且所有副本都是 `REMOVED` → `OBJECT_NOT_FOUND`；
 4. key 存在，没有可读副本，但不是全部 `REMOVED` → `REPLICA_IS_NOT_READY`。
 
-## 用测试确认 PROCESSING 这一种情况
+## 用测试确认 `PROCESSING` 这一种情况
 
 基线 `v0.3.13.post1` 的 [`master_service_test.cpp`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4041) 中，`SingleSliceMultiReplicaFlow` 用例把这条路径固定下来：
 
@@ -65,7 +65,7 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 | 提交 | `PutEnd(MEMORY)` | 返回成功 |
 | 提交后查询 | `GetReplicaList` | 3 个副本，均为 `COMPLETE` |
 
-四行里，测试直接断言的是副本状态、`PutStart` 返回的 slice 长度、查询错误码和提交后的副本列表。它没有执行字节传输，也没有验证读回的数据内容。因此，它证明的是"分配完成、`PutEnd` 之前查不到可读副本"这一种 `PROCESSING` 来源；句柄失效、传输端点失效等分支仍要靠第三站的条件和运行证据判断。
+四行里，测试直接断言的是副本状态、`PutStart` 返回的 slice 长度、查询错误码和提交后的副本列表。它没有执行字节传输，也没有验证读回的数据内容。因此，它证明的是“分配完成、`PutEnd` 之前查不到可读副本”这一种 `PROCESSING` 来源；句柄失效、传输端点失效等分支仍要靠第三站的条件和运行证据判断。
 
 ## 总结
 

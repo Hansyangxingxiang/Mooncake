@@ -1,10 +1,10 @@
 # Transfer Engine 返回成功，数据就传完了吗？
 
-**摘要：**一个 batch 跨两个后端提交，第一个后端已接收，第二个提交失败。哪些工作还在进行？调用方最早什么时候能释放资源？
+**摘要：**一个 batch 跨两个后端提交：后端 A 已接收任务，后端 B 提交失败。错误返回只说明后端 B 没有提交成功；后端 A 已接收的 task 仍可能执行。调用方要等所有 task 到达终态、且 `freeBatchID` 返回 `OK`，才能释放请求描述与数据缓冲区。
 
 一次传输里，调用方提交了一个跨两个后端的 batch：前两个请求进入后端 A，第三个请求进入后端 B。后端 A 已经接收任务，后端 B 随后提交失败，错误码返回给了调用方。
 
-现在能释放源 buffer 吗？
+现在还不能释放源缓冲区。
 
 先回到后端 A。它接收的任务仍可能执行：请求已经进入队列或设备路径，设备仍可能访问那段内存。错误码只说明后端 B 没有提交成功，没有撤销后端 A 已经接收的工作。
 
@@ -16,7 +16,7 @@
 
 调用方通常以 batch 管理一组工作。内部可能包含多个 task，一个 task 又可能拆成多个 slice，具体后端负责把这些片段交给网络或设备执行。
 
-![配图1：传输任务层级。](images/06-transfer-lifecycle-fig1.png)
+![配图 1：传输任务层级。](images/06-transfer-lifecycle-fig1.png)
 
 图注：层级只表示组织关系；不同后端对 slice 的拆分与完成聚合方式可能不同。
 
@@ -45,9 +45,9 @@
 
 ## 最早什么时候可以释放
 
-释放条件比"接口返回错误"更严格：`freeBatchID` 遍历 batch 的 task，只有所有 task 的 `is_finished` 都为真，才删除 `BatchDesc` 并返回 `Status::OK`；否则返回 `Status::BatchBusy`，消息是 `BatchID cannot be freed until all tasks are done`。
+释放条件比“接口返回错误”更严格：`freeBatchID` 遍历 batch 的 task，只有所有 task 的 `is_finished` 都为真，才删除 `BatchDesc` 并返回 `Status::OK`；否则返回 `Status::BatchBusy`，消息是 `BatchID cannot be freed until all tasks are done`。
 
-`BatchBusy` 只表示"还有工作没结束"，不是另一种完成状态。
+`BatchBusy` 只表示“还有工作没结束”，不是另一种完成状态。
 
 把收尾阶段和返回结果分开看：
 
@@ -59,24 +59,24 @@
 `freeBatchID` 的三种结果：
 
 - `Status::OK`：所有 task 已结束，`BatchDesc` 已释放。
-- `Status::BatchBusy`：仍有 task 未结束，batch 仍存在；继续管理，不能释放请求描述与 buffer。
+- `Status::BatchBusy`：仍有 task 未结束，batch 仍存在；继续管理，不能释放请求描述与数据缓冲区。
 - 其他错误：释放未完成，batch 仍存在；不能把它当成已回收。
 
 因此，最早的安全释放点是：所有已提交 task 都到达终态，且 `freeBatchID` 返回 `OK`。如果返回 `BatchBusy` 或其他错误，batch 仍然存在，调用方还要继续管理它。
 
 ## 三种生命周期落到这条路径
 
-请求描述、数据 buffer、batch 资源的生命周期，不一定完全相同。仍以这个跨后端的 batch 为例：
+请求描述、数据缓冲区、batch 资源的生命周期，不一定完全相同。仍以这个跨后端的 batch 为例：
 
 - 请求描述：task 里的 `request` 指向调用方传入的 `TransferRequest` 向量元素（`task.request = &entries[i]`），不是深拷贝。`getTransferStatus` 仍会通过该指针读取请求长度，所以调用方必须让该向量在原位保持有效，直到 batch 被释放。后端 B 提交失败，不会让这个要求消失。
-- 数据 buffer：`Slice` 保存本地地址、长度和远端地址；本地 buffer 必须保持注册且不被释放，直到传输完成。后端 A 已接收的工作可能仍会访问它，不能因为整体返回错误就提前释放。
+- 数据缓冲区：`Slice` 保存本地地址、长度和远端地址；本地缓冲区必须保持注册且不被释放，直到传输完成。后端 A 已接收的工作可能仍会访问它，不能因为整体返回错误就提前释放。
 - BatchID：类型是 `uint64_t`；`MultiTransport` 把新建的 `BatchDesc*` 转成这个整数返回，`freeBatchID` 再转回指针。调用方只能把它当不透明句柄。只有 `freeBatchID` 返回 `OK` 才删除 `BatchDesc`；返回 `BatchBusy` 或其他错误时，batch 仍然存在。
 
-这三个对象不一定同时释放。释放 batch 只处理 batch 资源；数据 buffer 是否还能被后端访问，要单独判断。数据到达也不代表请求描述可以立刻废弃。
+这三个对象不一定同时释放。释放 batch 只处理 batch 资源；数据缓冲区是否还能被后端访问，要单独判断。数据到达也不代表请求描述可以立刻废弃。
 
 ## 错误已报告，设备可能仍在访问
 
-接口返回错误，说明调用方已经知道"这次提交没有全部成功"。它不说明后端 A 已经停止访问请求描述或数据 buffer。
+接口返回错误，说明调用方已经知道“这次提交没有全部成功”。它不说明后端 A 已经停止访问请求描述或数据缓冲区。
 
 读代码时，应追踪后端是否持有引用或指针，以及最后一次可能访问发生在什么时候。这也是为什么传输层问题经常表现为偶现错误：正常情况下工作结束得快，错误路径或压力场景却会暴露过早释放。
 
@@ -84,7 +84,7 @@
 
 `submitTransfer` 返回成功，只表示请求已被接受；某个 transport 失败后返回错误，也不表示其他已接收的 task 已经停止。调用方最早的安全释放点是：所有已提交 task 都到达终态，且 `freeBatchID` 返回 `Status::OK`。
 
-`BatchBusy` 或其他错误都表示 batch 仍存在；此时请求描述、数据 buffer 和 BatchID 还要继续管理。错误已报告，设备可能仍在访问，这正是过早释放会变成偶现问题的原因。
+`BatchBusy` 或其他错误都表示 batch 仍存在；此时请求描述、数据缓冲区和 BatchID 还要继续管理。错误已报告，设备可能仍在访问，这正是过早释放会变成偶现问题的原因。
 
 **源码延伸：**`allocateBatchID`、`submitTransfer`、状态查询与 `freeBatchID`。版本基线为 `v0.3.13.post1`。
 
