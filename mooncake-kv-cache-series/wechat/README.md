@@ -8,7 +8,7 @@
 
 | 篇次 | 文章 |
 |---|---|
-| 1 | [同样的 1,024 个前缀 token，第二台推理实例还要重算吗？](01-shared-kv-cache.md) |
+| 1 | [同样的 1024 个前缀 token，第二台推理实例还要重算吗？](01-shared-kv-cache.md) |
 | 2 | [一个 KV Cache 对象，在 Mooncake 里到底怎么放？](02-objects-and-replicas.md) |
 | 3 | [KV 已经写到远端，Mooncake 什么时候才让其他实例读？](03-put-visibility.md) |
 | 4 | [KV 已经读回本地，这次 Get 为什么还会返回 LEASE_EXPIRED？](04-get-and-lease.md) |
