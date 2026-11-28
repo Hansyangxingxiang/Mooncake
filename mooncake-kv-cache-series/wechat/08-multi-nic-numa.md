@@ -13,15 +13,31 @@
 *配图1：源缓冲区与两张网卡的 NUMA 位置。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":22,"diagramPadding":4,"htmlLabels":true,"subGraphTitleMargin":{"top":8,"bottom":12}},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.cluster-label span{font-size:13px !important;font-weight:600;color:#5B6B82}.nodeLabel{line-height:1.35}"}}%%
 flowchart TB
-    M["源内存 · NUMA 0"]
-    M -->|"同节点"| A["NIC 0<br/>NUMA 0"]
-    M -.->|"跨节点"| B["NIC 1<br/>NUMA 1"]
-    A --> R["远端副本 R1"]
-    B --> R
+    subgraph N0["NUMA 0"]
+        BUF["<b>源缓冲区</b><br/>4 MiB · 本地内存"]:::data
+        NIC0["<b>NIC 0</b><br/>NUMA 0"]:::topo
+    end
+
+    subgraph N1["NUMA 1"]
+        NIC1["<b>NIC 1</b><br/>NUMA 1"]:::topo
+    end
+
+    R1["<b>远端 R1</b><br/>Store Segment"]:::data
+
+    BUF -.-|"同节点（更近）"| NIC0
+    BUF -.-|"跨节点"| NIC1
+    NIC0 -.->|"候选路径"| R1
+    NIC1 -.->|"候选路径"| R1
+
+    style N0 fill:#FFFFFF,stroke:#8FA6C8,stroke-width:1px,stroke-dasharray:4 3,color:#5B6B82
+    style N1 fill:#FFFFFF,stroke:#8FA6C8,stroke-width:1px,stroke-dasharray:4 3,color:#5B6B82
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef topo fill:#F7F9FC,stroke:#5B6B82,stroke-width:1px,stroke-dasharray:4 3,color:#0B1F3A,font-size:15px
 ```
 
-*图注：两张网卡是示意拓扑中的候选。实际 WR 由哪张卡提交，还要结合设备选择记录与端口计数确认。*
+*图注：虚线只表示 NUMA 拓扑上的位置关系——源缓冲区在 NUMA 0，NIC 0 与它同节点，NIC 1 跨节点；两条通往 R1 的虚线都是候选路径，不表示实际选中的发送卡。*
 
 ## 先选 transport，再选 HCA
 

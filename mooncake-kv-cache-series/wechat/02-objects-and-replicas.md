@@ -34,15 +34,28 @@ Master 在运行时维护这份对象元数据。客户端给出 key `K` 后，M
 *配图1：key K 的对象元数据与两份副本。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":24,"diagramPadding":4,"htmlLabels":true,"subGraphTitleMargin":{"top":6,"bottom":16}},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.cluster-label span{font-size:13px !important;font-weight:600;color:#5B6B82}.nodeLabel{line-height:1.35}"}}%%
 flowchart TB
-    OM["Master<br/>ObjectMetadata(K)<br/>4 MiB · 副本列表 R1、R2"]
-    R1[["R1<br/>Store Segment 1 内<br/>4 MiB 有效负载"]]
-    R2[["R2<br/>Store Segment 2 内<br/>4 MiB 有效负载"]]
-    OM -->|"副本描述：地址与长度"| R1
-    OM -->|"副本描述：地址与长度"| R2
+    OM["<b>Master</b><br/>ObjectMetadata(K)<br/>key K<br/>对象 4 MiB · 副本 R1、R2"]:::master
+
+    subgraph S2["Store Segment 2"]
+        R2["<b>R2</b><br/>4 MiB 有效负载"]:::data
+    end
+
+    subgraph S1["Store Segment 1"]
+        R1["<b>R1</b><br/>4 MiB 有效负载"]:::data
+    end
+
+    OM -.-|"记录位置<br/>（仅元数据）"| R1
+    OM -.-|"记录位置<br/>（仅元数据）"| R2
+
+    style S1 fill:#FFFFFF,stroke:#8FA6C8,stroke-width:1px,stroke-dasharray:4 3,color:#5B6B82
+    style S2 fill:#FFFFFF,stroke:#8FA6C8,stroke-width:1px,stroke-dasharray:4 3,color:#5B6B82
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
 ```
 
-*图注：Master 在 `ObjectMetadata` 中为对象 K 维护副本条目 R1、R2。两份副本各存一份 4 MiB 有效负载，位于各自的 Store Segment；条目分别记录位置和状态。*
+*图注：Master 只在 `ObjectMetadata` 中记录 R1、R2 的位置与状态；两条虚线表示元数据记录，不是 Master 发出的 4 MiB 数据——两份 4 MiB 有效负载由客户端经 Transfer Engine 分别写入各自的 Store Segment。*
 
 **对象是否存在，与某一份内存副本是否存在，并不是同一件事。**
 

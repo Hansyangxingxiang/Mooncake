@@ -17,19 +17,23 @@
 *配图1：B 在 PutEnd 前后各查询一次。*
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Noto Sans CJK SC, sans-serif","fontSize":"15px","lineColor":"#5B6B82","edgeLabelBackground":"#FFFFFF"},"flowchart":{"curve":"linear","nodeSpacing":18,"rankSpacing":22,"diagramPadding":4,"htmlLabels":true},"themeCSS":".edgeLabel .label span{font-size:13px !important;line-height:1.3}.nodeLabel{line-height:1.4}"}}%%
 flowchart TB
-    S["Master 分配 R1<br/>副本状态 PROCESSING"]
-    W["Transfer Engine 写完 4 MiB<br/>字节到达 R1"]
-    Q1["B 查询 K<br/>REPLICA_IS_NOT_READY"]
-    E["Master 接受 PutEnd<br/>副本状态 COMPLETE"]
-    Q2["B 再查询 K<br/>拿到 R1 的描述"]
+    P1["<div style='width:290px;text-align:center'><b>① A → Master：PutStart</b><br/>申请副本空间<br/>R1 副本状态记为 PROCESSING</div>"]:::master
+    P2["<div style='width:290px;text-align:center'><b>② A 的 Transfer Engine → R1</b><br/>传输 4 MiB 有效负载<br/>字节已到达 R1</div>"]:::data
+    W["<div style='width:290px;text-align:center'><b>可见性窗口</b><br/>字节已到达 R1<br/>R1 状态仍为 PROCESSING<br/>B 查询 K → REPLICA_IS_NOT_READY</div>"]:::window
+    P3["<div style='width:290px;text-align:center'><b>③ A → Master：PutEnd</b><br/>提交写入<br/>Master 将 R1 标为 COMPLETE</div>"]:::master
+    P4["<div style='width:290px;text-align:center'><b>B 再查询 K</b><br/>拿到 R1 的副本描述</div>"]:::client
 
-    S --> W --> Q1 --> E --> Q2
-    style Q1 fill:#FFF4EC,stroke:#D46B08
-    style Q2 fill:#ECFDF5,stroke:#15803D
+    P1 --> P2 --> W --> P3 --> P4
+
+    classDef master fill:#EAF2FF,stroke:#1677FF,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef data fill:#ECFDF5,stroke:#15803D,stroke-width:1.5px,color:#0B1F3A,font-size:15px
+    classDef window fill:#FFF7ED,stroke:#D46B08,stroke-width:2px,stroke-dasharray:5 3,color:#7C2D12,font-size:15px
+    classDef client fill:#FFFFFF,stroke:#5B6B82,stroke-width:1.5px,color:#0B1F3A,font-size:15px
 ```
 
-*图注：图中的 R1 句柄和端点有效。两次查询之间改变的是 Master 记录的副本状态：从 `PROCESSING` 变为 `COMPLETE`。*
+*图注：`PutStart` 就已返回 R1 的描述且句柄有效；B 两次查询的差异只来自 Master 记录的副本状态在 `PutEnd` 后从 `PROCESSING` 变成 `COMPLETE`，字节到达与否不改变查询结果。*
 
 Master 的 `GetReplicaList` 会过滤副本。副本状态 `COMPLETE` 是第一道条件，内存或 NoF 句柄失效、传输端点被标记为失效，也会导致相关副本被排除。
 
