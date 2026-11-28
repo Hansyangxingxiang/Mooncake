@@ -8,7 +8,7 @@
 2. [一个对象的两份副本占用哪段内存？](02-objects-and-replicas.md)
 3. [Put 写完什么时候可见？](03-put-visibility.md)
 4. [Get 读回字节为什么仍可能过期？](04-get-and-lease.md)
-5. [Mooncake 提交失败后，为什么还不能释放源缓冲区？](06-transfer-lifecycle.md)
+5. [Transfer Engine 提交失败后，为什么还不能释放源缓冲区？](06-transfer-lifecycle.md)
 6. [一次 RDMA WRITE 由谁确认完成？](07-rdma-data-path.md)
 7. [双网卡传输会走哪条路径？](08-multi-nic-numa.md)
 8. [为什么淘汰候选会被跳过？](09-cache-eviction.md)
@@ -23,7 +23,7 @@
 
 推理实例 A 把一个前缀 KV 分块写入 Store，key 记为 `K`，有效负载为 **4 MiB**。B 在另一次请求中尝试复用它。R1、R2 是 K 的两份内存副本，R3 是 SSD 篇单独讨论的磁盘副本。具体场景可能只用其中一份，另外两份是否存在取决于当篇的配置和阶段。
 
-4 MiB 是示意对象的大小。首篇的 1024 个 token 描述请求前缀，实际的字节数、对象数和传输分片由模型、框架布局和命中范围决定。
+4 MiB 是示意对象的大小。首篇的 1024 个 token 描述请求前缀，实际的字节数、对象数和传输分片由模型、框架布局和实际复用范围决定。
 
 ## 排版与预览
 

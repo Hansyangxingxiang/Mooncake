@@ -29,9 +29,9 @@ flowchart TB
 
 ## 查询返回的位置，由客户端选择
 
-Master 在查询时过滤副本，并返回候选位置。直接调用 `Client::Get` 时，函数取列表中的第一个 `COMPLETE` 副本。部分 `RealClient` 入口会先用 `SelectBestReplica` 选出一个候选，再把筛过的描述交给 `Client::Get`。
+Master 在查询时过滤副本，并返回候选位置。直接调用 `Client::Get` 时，函数取列表中的第一个副本状态为 `COMPLETE` 的副本。部分 `RealClient` 入口会先用 `SelectBestReplica` 选出一个候选，再把筛过的描述交给 `Client::Get`。
 
-在本篇的远端内存场景里，如果查询同时返回 R1 和 R2，启用远端内存评分时可以从两者中选分数更低的一份。未启用时，`SelectBestReplica` 选第一个远端内存候选。打分只发生在没有命中本地候选的分支，也只作用于候选内存副本。
+在本篇的远端内存场景里，如果查询同时返回 R1 和 R2，启用远端内存评分时可以从两者中选分数更低的一份。未启用时，`SelectBestReplica` 选第一个远端内存候选。打分只发生在没有本地候选的分支，也只作用于候选内存副本。
 
 选定 R1 后，客户端才发起数据传输。预先分配的缓冲区容量不足 4 MiB 时，全量 `TransferRead` 会返回 `INVALID_PARAMS`。部分 `RealClient` 入口对设备缓冲区还需要主机暂存，是否中转取决于入口、设备和路径。
 
@@ -47,7 +47,7 @@ Master 在查询时过滤副本，并返回候选位置。直接调用 `Client::
 
 ## 先确认错误来自查询还是读取
 
-**查不到或暂时不可读。** Master 以 `OBJECT_NOT_FOUND` 表示当前没有可返回的对象，以 `REPLICA_IS_NOT_READY` 表示对象有副本记录，但目前没有副本通过可读过滤，例如写入仍在 `PROCESSING`。读取函数收到的列表中若没有 `COMPLETE` 候选，也可能返回 `INVALID_REPLICA`。
+**查不到或暂时不可读。** Master 以 `OBJECT_NOT_FOUND` 表示当前没有可返回的对象，以 `REPLICA_IS_NOT_READY` 表示对象有副本记录，但目前没有副本通过可读过滤，例如写入仍在 `PROCESSING`。读取函数收到的列表中若没有副本状态为 `COMPLETE` 的候选，也可能返回 `INVALID_REPLICA`。
 
 **拿到描述后失败。** 保留查询耗时、选中的副本和读取返回值。若接口直接返回 `ErrorCode`，可以分开记录传输、校验和租约错误；若用 `get_buffer_internal` 一类返回指针的路径，多种失败都可能变成空指针，需要结合对应层的日志或指标。
 
