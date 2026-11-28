@@ -14,17 +14,17 @@ digraph G {
     label="目标 Segment";
     fontname="Noto Sans CJK SC"; fontsize=20; color="#8FA6C8";
     style="rounded,dashed"; margin=12;
-    R1 [label="R1\nKV 副本", shape=box3d];
+    R1 [label="R1\n4 MiB", shape=box3d];
   }
 
   M -> A [style=invis, weight=10];
   M -> B [style=invis, weight=10];
   { rank=same; A; B; }
 
-  M -> A  [dir=back, label="① 申请 / 提交"];
-  M -> B  [dir=both, label="② 查询位置\n← 返回副本"];
-  A -> R1 [label="③ 写入 KV", style=bold, color="#1677FF",
+  M -> A  [dir=both, label="申请 / 提交"];
+  M -> B  [dir=both, label="查询位置\n返回副本"];
+  A -> R1 [label="写入 KV", style=bold, color="#1677FF",
            fontcolor="#0B1F3A", penwidth=4];
-  R1 -> B [label="④ 读回 KV", constraint=false, style=bold,
+  R1 -> B [label="读回 KV", constraint=false, style=bold,
            color="#1677FF", fontcolor="#0B1F3A", penwidth=4];
 }

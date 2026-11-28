@@ -1,130 +1,69 @@
 # KV 已经读回本地，为什么还会返回 LEASE_EXPIRED？
 
-**摘要**：推理实例 B 从 R1 读回字节时，客户端记录的租约截止时间已经过去；`Client::Get` 在传输后检查租约，返回 `LEASE_EXPIRED` 并拒绝这次结果。R1 是否回收，仍由 Master 侧决定。
+**摘要：** 实例 B 读回 4 MiB 字节时，客户端记录的租约截止时间已经过去。`Client::Get` 会在传输后检查租约，并拒绝这次结果。R1 是否已回收，要到 Master 侧确认。
 
-实例 B 的请求命中前缀 key `K`，向 Master 查询后拿到可读副本列表和一份读租约（lease）；列表里带着 R1 的副本描述。客户端选中 R1，开始从 R1 读取这段 KV。
+实例 B 需要加载示意对象 `K`。Master 返回可读副本列表，B 选中内存副本 R1。网络排队拉长了这次读取，等完整的 4 MiB 都到了本地缓冲区，`Client::Get` 却返回 `LEASE_EXPIRED`。B 还能用这份缓冲区吗？
 
-传输比预期慢。等字节全部到达本地缓冲区，租约已经过期。数据到了本地，结果仍被拒绝：`Client::Get` 把租约检查排在传输之后，先搬完，再判断这次读取是否还在承诺窗口内。
+## 查询耗时也占用读租约窗口
 
-## 一次慢读的时间线
+Master 在返回可读副本列表时为对象授予读租约，响应中含有租约时长（TTL）。租约有效期间，普通 `Remove` 和淘汰受这层保护。例如，未指定强制删除的 `Remove` 可能返回 `OBJECT_HAS_LEASE`。
 
-读方拿到副本描述后，系统不能立刻把这段空间交给其他对象，否则读方可能读到已被复用的数据。读租约给出一段有边界的读取窗口：在这段时间内，这份副本不会被正常删除或淘汰。
+客户端在发出查询 RPC **之前**记录本地单调时钟。收到响应后，客户端用「查询起点 + TTL」算出自己的截止时间。这样，查询 RPC 的等待也算在客户端可用窗口内。客户端的时间线和 Master 的实际回收时刻要分别观察。
 
-Master 在返回可读副本列表时授予租约，并在响应里带上 TTL。客户端计时不是从收到响应开始：它在发出查询 RPC 之前先取一次本地 `steady_clock` 起点，收到响应后用 `start_time + lease_ttl_ms` 算出截止时间。查询 RPC 本身的耗时，也占用了客户端的可用窗口。
-
-下面按相对时间展开这次慢读。假设租约 TTL 是 200 ms——这个数值只用于示意，不是默认配置：
-
-*配图 1：一次跨过租约截止时间的读取。*
+*配图1：客户端接收 4 MiB 时，本地截止时间已过去。图中 TTL 是示例值。*
 
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 12, "rankSpacing": 18}}}%%
 flowchart TB
-    T0["t = 0<br/>记录本地计时起点<br/>随后发出查询 RPC"]
-    T1["收到查询响应<br/>取得副本描述与 TTL<br/>（查询耗时占用窗口）<br/>截止 = 本地起点 + TTL"]
-    T2["t = 200 ms<br/>租约到期（示例 TTL）<br/>保护窗口结束"]
-    T3["t = 260 ms<br/>数据全部到达本地缓冲区<br/>传输结束，客户端检查租约<br/>→ LEASE_EXPIRED"]
+    T0["0 ms<br/>B 发出查询"]
+    T1["收到 R1 描述与 TTL<br/>B 开始读取"]
+    T2["200 ms<br/>客户端租约到期"]
+    T3["260 ms<br/>4 MiB 到达本地"]
+    T4["完成检查<br/>LEASE_EXPIRED"]
 
-    T0 --> T1 --> T2 --> T3
-
-    style T2 stroke:#D46B08,stroke-width:3px,stroke-dasharray:7 4,font-weight:bold
-    style T3 stroke:#C2410C,stroke-width:4px,font-weight:bold,fill:#FFF4EC
+    T0 --> T1 --> T2 --> T3 --> T4
+    style T2 fill:#FFF4EC,stroke:#D46B08,stroke-dasharray:5 3
+    style T4 fill:#FFF4EC,stroke:#C2410C
 ```
 
-*图注：客户端发出查询 RPC 前记录计时起点；橙色虚线框是示例中 200 ms 的租约到期点。数据在 260 ms 时才全部到达本地缓冲区，客户端随后检查租约并返回 `LEASE_EXPIRED`。到期只表示保护窗口结束，不表示 R1 已被回收。*
+*图注：截止点按 B 的查询起点计算，即使读完后字节完整，B 也不能把这次缓冲区当成成功结果。*
 
-时间线里有两个不同的时刻：200 ms 是租约到期，260 ms 是传输完成。到期点由客户端记录的起点加上 Master 给出的 TTL 算出；传输何时完成，由本地读取决定。最后做检查的是客户端：`Client::Get` 先 `TransferRead`（或 `ReadDfsReplica`），再按需校验（checksum），最后检查租约。字节到得再完整，也不能跳过这次检查。
+## 查询返回的位置，由客户端选择
 
-这条路径是“尽力读 + 事后否决”：先完成传输，再判断这次读取是否仍在承诺窗口内。
+Master 在查询时过滤副本，并返回候选位置。直接调用 `Client::Get` 时，函数取列表中的第一个 `COMPLETE` 副本。部分 `RealClient` 入口会先用 `SelectBestReplica` 选出一个候选，再把筛过的描述交给 `Client::Get`。
 
-**分析**：好处是实现简单，不需要在传输前阻塞等待；代价是租约过期时已经浪费了一次带宽。对 KV Cache 这种“读失败可以重算”的场景，这个取舍是成立的。
+在本篇的远端内存场景里，如果查询同时返回 R1 和 R2，启用远端内存评分时可以从两者中选分数更低的一份。未启用时，`SelectBestReplica` 选第一个远端内存候选。打分只发生在没有命中本地候选的分支，也只作用于候选内存副本。
 
-## 已定位、已搬完、可接受
+选定 R1 后，客户端才发起数据传输。预先分配的缓冲区容量不足 4 MiB 时，全量 `TransferRead` 会返回 `INVALID_PARAMS`。部分 `RealClient` 入口对设备缓冲区还需要主机暂存，是否中转取决于入口、设备和路径。
 
-回到 B 这次读取，按发生顺序可以拆成四步：
+## 完成检查按什么顺序报错？
 
-1. **查询**：B 向 Master 查询 key `K`，拿到可读副本列表和租约。这时 B 只有 R1 的描述，还没有数据。
-2. **选择**：客户端从列表里挑一个副本。Master 只过滤可读副本，不替客户端选。
-3. **搬运**：Transfer Engine 按副本介质和目标缓冲区选择路径，把字节从 R1 搬到 B 的本地缓冲区。
-4. **检查**：传输返回后，`Client::Get` 检查传输结果、可选校验和租约。三项都通过，才把结果交给调用方。
+对普通全量 `Client::Get`，只看函数最终交给调用方的结果，有三道关口：
 
-用三个时刻概括：查询后已定位，传输后已搬完，检查通过才可接受。慢读出问题，通常卡在“已搬完”和“可接受”之间。
+1. **传输返回错误**。例如 R1 的端点在查询之后失效，查询成功过的描述也可能无法继续使用。调用方应记录返回的传输错误，缓冲区可能已写入部分字节。这里的 `Get` 不会在失败后循环尝试 R2。
+2. **可选校验失败**。启用对象校验且响应携带期望校验值时，读方计算收到的数据的校验值。值不匹配返回 `CHECKSUM_MISMATCH`。校验步骤本身出错，也会先把错误交给调用方。
+3. **读租约过期**。只有前面通过，才会返回 `LEASE_EXPIRED`。传输之后的校验时间也会占用窗口，因此传输刚好在截止前结束，调用仍有可能因租约过期失败。
 
-Master 只过滤并返回可读副本列表，不替客户端选副本。选择发生在客户端：
+在示例中，B 走到第 3 步。Master 可能仍持有 R1。租约经过截止时间不会立即触发副本释放，也无法据此判断数据损坏。使用旧描述直接重试无法获得新的租约。若调用方决定重试，应重新查询 `K`，拿新的候选与租约，再按剩余请求预算决定读取 R1、R2 或由上层重新计算前缀。
 
-- `Client::Get` 内部调用 `FindFirstCompleteReplica`，取列表中第一个 `COMPLETE` 副本；
-- `RealClient` 的 ranged 路径在进入 `Client::Get` 之前，用 `SelectBestReplica` 先选一次，再把副本列表裁成只剩选中的那一个。
+## 先确认错误来自查询还是读取
 
-`SelectBestReplica` 会跳过非 `COMPLETE` 副本，优先级是：本地 MEMORY → 本地 NOF_SSD → 远端 MEMORY（可评分）→ 远端 NOF_SSD → LOCAL_DISK → DFS → DISK。
+**查不到或暂时不可读。** Master 以 `OBJECT_NOT_FOUND` 表示当前没有可返回的对象，以 `REPLICA_IS_NOT_READY` 表示对象有副本记录，但目前没有副本通过可读过滤，例如写入仍在 `PROCESSING`。读取函数收到的列表中若没有 `COMPLETE` 候选，也可能返回 `INVALID_REPLICA`。
 
-搬运方式则取决于介质和目标：
+**拿到描述后失败。** 保留查询耗时、选中的副本和读取返回值。若接口直接返回 `ErrorCode`，可以分开记录传输、校验和租约错误；若用 `get_buffer_internal` 一类返回指针的路径，多种失败都可能变成空指针，需要结合对应层的日志或指标。
 
-- **MEMORY，目标缓冲区在主机且可直读**：交给 Transfer Engine 直接读到目标缓冲区。
-- **MEMORY，目标缓冲区在 GPU 等设备上**：先落到主机暂存，再复制过去。
-- **LOCAL_DISK**：存储节点执行 offload 读取。
-- **DISK / DFS**：先读进临时缓冲区，再分散拷入目标缓冲区。
-
-“直读目标缓冲区”通常表示避免额外的应用层中转，**不是对所有后端、所有设备的零拷贝承诺**。TCP、RDMA、GPU 路径内部是否拷贝，要按实际后端判断。
-
-## 字节到了缓冲区，不等于读取被接受
-
-260 ms 时，B 的本地缓冲区里已经有一份完整数据。但 `Client::Get` 还要回答三个问题：
-
-- 传输是否成功返回？磁盘读取或 `TransferRead` 可能报错，即使缓冲区里已经写入部分字节。
-- 可选校验是否通过？
-- 检查时租约是否仍然有效？
-
-只有三项都通过，`Client::Get` 才把这份数据当作可用结果。`LEASE_EXPIRED` 说明第三项失败：这次读取不再受租约保护，客户端应拒绝结果。它不说明 R1 的空间已经被回收。
-
-租约到期只代表保护窗口结束，不代表对象立刻被删除。有效期内的租约阻止普通 `Remove` 和淘汰路径回收副本；删除侧遇到 `OBJECT_HAS_LEASE`，就是这层保护的证据。
-
-实际回收还要经过淘汰、引用计数和后台任务。所以 `LEASE_EXPIRED` 与“空间已回收”是两件事：
-
-- `LEASE_EXPIRED`：这次读取的结果不再受承诺保护，客户端应拒绝使用；
-- 空间已回收：对象真的被删除或复用了。
-
-前者是读方看到的错误，后者是资源侧的动作。中间隔着完整的回收判断。
-
-**一个例外：`LOCAL_DISK` 全量 offload。** `v0.3.13.post1` 中，`RealClient::get_buffer_internal` 的 `LOCAL_DISK` 全量 offload 分支直接调用 `batch_get_into_offload_object_internal`。这条路径之后只做校验，不调用 `IsLeaseExpired`，因此不经过 `Client::Get` 的同一处租约检查。
-
-同一实现里的 `DISK` 副本仍走 `Client::Get`，会经过检查。这个例外只属于那条 offload 路径，不能外推到所有磁盘读取。
-
-## 错误分三段保留
-
-把错误按阶段分开，上层才能决定是重试、换副本，还是重算。
-
-**查询阶段**
-
-- `OBJECT_NOT_FOUND`：对象不存在，或所有副本都已 `REMOVED`。应当放弃。
-- `REPLICA_IS_NOT_READY`：对象存在，但暂时没有可用副本。值得短暂重试。
-
-**选择阶段**
-
-- `INVALID_REPLICA`：列表里没有选到 `COMPLETE` 副本。
-
-**搬运与完成检查**
-
-在 `Client::Get` 中，顺序是：先 `TransferRead`（或 `ReadDfsReplica`），再可选校验，最后检查租约。传输失败直接返回后端错误；校验不符返回 `CHECKSUM_MISMATCH`；只有前两者都通过，才可能返回 `LEASE_EXPIRED`。
-
-- `INVALID_PARAMS`：在按容量传入目标缓冲区的读取路径中，缓冲区小于对象大小会返回该错误；系统不会截断读取，避免调用方误以为读全了。
-- 传输错误：保留后端返回的具体错误，不要统一成“读取失败”。
-- `LEASE_EXPIRED`：字节可能已经读到，但结果不再受保护。按可重试错误处理，而不是数据损坏。
-- `CHECKSUM_MISMATCH`：仅在启用校验且期望值不符时出现。该校验默认关闭，不要写成默认路径。
-
-错误分类越准确，越容易判断问题发生在查询、选择、搬运还是完成检查阶段。这次读取返回错误后，是否重试这次读取、换一个副本，还是让推理请求重算前缀，由调用方或推理框架决定；`Client::Get` 只把对应阶段的错误交回去。
+**走的是磁盘读取。** 在 `v0.3.13.post1` 的 `RealClient::get_buffer_internal` 中，若选中 `LOCAL_DISK`，全量读取直接调用 offload 路径，成功后执行适用的校验并返回缓冲区。该分支没有进入 `Client::Get` 的租约检查。这个入口的 `DISK` 路径仍调用 `Client::Get`。排查 SSD 时，先核实副本类型和入口，再判断适用哪一种检查顺序。
 
 ## 总结
 
-经 `Client::Get` 的读取，接受结果的条件是：传输成功、可选校验通过、租约未过期。字节到达本地缓冲区只是第一个条件；`LEASE_EXPIRED` 表示这次结果不再受租约保护，不等于数据损坏，也不能说明 R1 空间已经回收。R1 是否已经回收，要看 Master 侧的副本状态和回收流程。
+B 从 R1 搬完 4 MiB 后，还要通过适用的校验和租约检查，`Client::Get` 才会接受结果。`LEASE_EXPIRED` 指向一次超出客户端读取窗口的尝试，Master 的回收状态需要另查。遇到错误时，先分清查询、传输与完成检查，再决定是否重新查询、换副本或交给上层重算。
 
-`LOCAL_DISK` 全量 offload 分支是明确例外：它走 `batch_get_into_offload_object_internal`，之后只做校验，不经过同一处租约检查。因此，这条结论不能外推到所有磁盘读取。
+**源码延伸**（`v0.3.13.post1`）
 
-**源码延伸**：`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。
+- [Client::Query 的本地计时](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211) · [Master 授予读租约](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3682)
+- [Client::Get 的完成检查](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1390) · [SelectBestReplica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica_selection.h#L123)
+- [TransferRead 过滤过小的缓冲区](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L4497) · [RealClient 的 LOCAL_DISK 全量分支](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L2874)
+- [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [普通 Remove 的租约检查](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L6416)
 
-- [Client::Get](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1352) · [IsLeaseExpired](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/client_service.h#L60)
-- [Client::Query（读租约起点）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)
-- [SelectBestReplica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica_selection.h#L123)
-- [GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [RealClient::get_buffer_internal（LOCAL_DISK 分支）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L2815)
+[系列目录与排版说明](README.md) · [源码阅读番外](05-source-reading.md)
 
-[系列目录与排版说明](README.md)
-
-[上一篇](03-put-visibility.md) · [下一篇](05-source-reading.md)
+[上一篇](03-put-visibility.md) · [下一篇](06-transfer-lifecycle.md)

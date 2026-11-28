@@ -1,118 +1,83 @@
 # KV Cache 已经写进 SSD，为什么其他节点还可能读不到？
 
-**摘要**：数据文件、本地索引、Master 登记是三个不同层次。通知 `NotifyOffloadSuccess` 返回错误或超时时，本地已能定位这份副本，其他节点却不一定能读到；返回值只能证明这次 RPC 没成功，不能区分 Master 未执行还是已执行而响应丢失。
+**摘要：** 4 MiB 对象 K 已写进本地 SSD，磁盘节点也建立了索引。登记通知超时后，Master 是否记录了这份副本仍待确认。即使查到了副本，读回还要经过磁盘 I/O 和数据传输。
 
-Mooncake 的 KV Cache 下沉数据已经写进本地 SSD：bucket 的数据文件、元数据文件都在，本地 `object_bucket_map_` 也已提交。接下来要通知 Master 登记这份磁盘副本，通知却返回错误或超时。
+上一轮淘汰留下了作为下沉源的内存副本 R1。现在，存储节点把 K 写进 SSD，准备把这份 LOCAL_DISK 副本记为 R3。数据文件和本地索引都已就绪，通知 Master 的 RPC 却超时了。
 
-在分布式缓存里，完成文件写入只是其中一步。本地索引必须能定位它，Master 也必须知道它已经可用；这次本地索引已经提交，不确定的是 Master 登记。本篇只跟 LOCAL_DISK 的这一条下沉路径，看通知出错当时，不同位置分别能确认什么。
+要解释 B 为什么还能从 R1 读到 K，或者为什么查到了 R3 却读不回数据，先顺着 R3 的三个位置看一遍：文件、本地索引、Master 目录。本篇限定在 `v0.3.13.post1` 的 bucket 后端。
 
-## 下沉通常是增加副本
+## 先增加 R3，再决定是否回收 R1
 
-上一篇提到，有些策略会先下沉、再回收内存。这里把动作拆开看。
+下沉为 K 建立磁盘副本。登记完成后，R1 和 R3 可以共存。R1 等到引用和租约等保护条件允许时，才参与后续内存淘汰。
 
-下沉：把数据写入 SSD，并建立相应磁盘副本。
+假如后来只剩 R3，读请求可以走磁盘路径。系统在满足提升条件时还可以为 K 重新建立内存副本。
 
-淘汰：在满足条件时回收某份副本，常见目标是内存空间。
-
-提升（promotion）：需要时重新建立内存副本。
-
-因此，下沉写入成功并完成 Master 登记后，可能出现内存与磁盘副本共存的阶段。
-
-**下沉不等于立即删除内存，磁盘命中也不等于每次都必须提升。**
-
-*配图 1：副本组合的三种状态。*
+*配图1：K 从仅有内存副本，到新增 R3，再到仅有 SSD 副本。*
 
 ```mermaid
-stateDiagram-v2
-    state "仅内存副本" as S1
-    state "内存 + 磁盘副本" as S2
-    state "仅磁盘副本" as S3
-    [*] --> S1
-    S1 --> S2: 下沉并登记成功
-    S2 --> S3: 淘汰内存副本
-    S3 --> S2: 磁盘命中后按需提升
-```
-
-*图注：下沉成功后内存与磁盘副本可能共存；淘汰内存副本后只剩磁盘副本；提升是按需动作，不是每次磁盘命中都必须执行。*
-
-## 写入与通知的顺序
-
-下沉的物理单位是 bucket，不是单个对象。每个 bucket 有两个文件：`<bucket_id>.bucket` 存数据，`<bucket_id>.meta` 存索引。写入顺序是数据先、元数据后。
-
-`BatchOffload` 在写完后先提交本地索引：`object_bucket_map_` 和 `buckets_` 已经能在本节点定位这些 key，然后才调用 `complete_handler` 通知 Master。
-
-本地索引先于 Master 通知，是因为 Master 一旦把读请求指向本节点，`BatchLoad` 必须能立刻在 `object_bucket_map_` 里查到 key。否则会出现“目录说能读，存储节点却找不到”的窗口。
-
-*配图 2：从本地落盘到 Master 登记。*
-
-```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 10, "rankSpacing": 18, "diagramPadding": 8}}}%%
 flowchart TB
-    D["① 写数据文件"] --> MD["② 写元数据"]
-    MD --> I["③ 提交本地索引<br/>（本节点可定位）"]
-    I --> N["④ 发出登记通知<br/>NotifyOffloadSuccess"]
-    N -->|收到成功响应| R["⑤ Master 登记结果<br/>已确认，可路由读取"]
-    N -.->|错误 / 超时| U["登记结果不确定<br/>无法确认 Master 登记"]
-    R ~~~ U
-
-    style R stroke:#389E0D,stroke-width:3px,fill:#F6FFED
-    style U stroke:#D46B08,stroke-width:2px,stroke-dasharray:6 4,fill:#FFF7E6
+    M["K 的内存副本 R1"] -->|下沉并登记 R3| B["R1 与 R3 共存"]
+    B -->|内存淘汰| D["只剩 SSD 副本 R3"]
 ```
 
-*图注：写入顺序是先写数据文件、元数据文件，再提交本地索引，随后通知 Master。图中实线表示收到成功响应、Master 登记结果已确认；通知错误或超时时，本节点可以确认本地索引已提交，但仅凭超时无法判断 Master 是否已登记。可路由读取不等于掉电持久，持久性见下文。*
+*图注：磁盘副本 R3 登记后，内存副本才进入这条示意路径的后续回收阶段。*
 
-## 出错当时，四个位置各能确认什么
+## 登记前，磁盘节点先提交索引
 
-通知 Master 出现异常时，先不要用一句“下沉失败”概括。把两种情况并排看：
+bucket 可以容纳多个对象。每个 bucket 有一个 `<bucket_id>.bucket` 数据文件和一个 `<bucket_id>.meta` 索引文件，写入顺序是数据在前、元数据在后。K 的 4 MiB 是对象大小，bucket 还可能包含其他对象及索引开销。
 
-| 观察位置 | 请求未执行 | 已执行、响应丢失 |
-|---|---|---|
-| 本地数据文件与索引 | 已就绪，本节点能定位 | 已就绪，本节点能定位 |
-| Master 记录 | 没有这次 LOCAL_DISK 副本 | 可能已有；返回值不能确认 |
-| 其他 Client 查询 | 查不到这份磁盘副本 | 可能查到，取决于是否已登记 |
-| 通知调用方 | 只知 RPC 未成功 | 只知 RPC 未成功，无法区分 |
+`BatchOffload` 写完文件后，先提交本地索引，再通过 `NotifyOffloadSuccess` 上报。开始登记前，`BatchLoad` 已有按 K 定位 bucket、偏移和长度所需的本地索引。
 
-表里的“其他 Client 能否查到”只针对这次新登记的磁盘副本。对象整体是否仍可读，还取决于 K 是否已有其他有效副本；不要把一次磁盘副本登记异常直接写成整个 key 不可读。
+*配图2：写入、本地索引和 Master 登记的顺序。*
 
-`storage_backend.cpp` 在 `complete_handler` 返回非 OK 时，日志写的是 `Master was NOT notified`，然后调用 `RollbackCommittedBucket`：删除本地索引、等待已经开始的本地读取结束、再删除磁盘文件。
+```mermaid
+flowchart TB
+    D["写数据文件"] --> M["写元数据文件"]
+    M --> I["提交本地索引"]
+    I --> N["通知 Master 登记 R3"]
+```
 
-这段回滚逻辑适用于“请求确实没有到达 Master”的情况。但一个非 OK 结果也可能来自请求已经发出后的超时或连接中断。此时客户端只知道这次 RPC 没有拿到成功响应，不能区分“Master 没执行”与“Master 执行了，但响应丢了”。
+*图注：发出登记通知时，本地索引已经提交。RPC 超时留下的是 Master 侧结果待确认。*
 
-**分析（推断）**：如果 Master 实际登记成功，而客户端按“未通知”回滚并删除了文件，Master 就可能向其他 Client 发布一个本节点已经无法读取的副本。这是从当前代码路径推导出的风险，不是已在生产验证的行为；源码注释的假设是“通知失败即未登记”。
+## 写失败、通知超时、读回失败分别看哪里
 
-反过来，如果客户端不回滚，只保留本地文件和索引，Master 又没有登记，这份副本就是“本地能读、集群目录不知道”的幽灵副本。两个方向都需要额外的对账信息，不能只靠这次通知的返回值判断。
+**写失败，先看 bucket 文件。** 数据写入出错或长度不符时，写入返回错误。元数据文件写入失败时，后端尝试删除刚写好的数据文件。下沉工作线程会把这类失败的任务用 `data_size = -1` 上报。Master 收到这个失败确认（NACK）后，清理尚在的任务并释放源副本引用，跳过新增磁盘副本。
 
-这里说的是 `NotifyOffloadSuccess` 这个 RPC 本身的异常。单个 key 写失败走的是另一条明确路径：失败元数据用 `data_size = -1` 作为 NACK，Master 看到负值后清理任务、不新增副本。NACK 明确表达了失败；RPC 超时则不明确。
+**通知超时，先查 Master 目录。** 超时可能发生在 Master 执行前，也可能发生在登记成功、响应返回前。其他 Client 是否能查到 R3 取决于目录里有没有这次记录。RPC 的批量返回也不是逐 key 收据。Master 按条目处理，代码中有跳过和拒绝的分支，所以排查 K 时要核对 K 的副本清单。
 
-## 回滚、重启扫描与重新注册，各修哪一层
+**目录有 R3，先到持盘节点查读回。** 该节点先按 key 找索引并打开 bucket 文件，再把数据读进缓冲区。索引缺失会在 `BatchLoad` 返回 `INVALID_KEY`，打开文件失败会传出错误，读到的字节不足则返回 `FILE_READ_FAIL`。SSD 读入缓冲区后，远端读方还要通过 Transfer Engine 搬运数据，传输失败有自己的返回路径。
 
-回滚修的是本地层。`RollbackCommittedBucket` 删除索引、等待在途读取、删除文件，目标是避免留下本地可读但 Master 不知道的副本。它不能修复“Master 已经登记”的另一半。
+如果 R1 或 R2 仍然可用，R3 的异常只说明这一份副本的状态。B 能否完成这次 Get，还要看它拿到的副本列表和所走的读路径。
 
-重启扫描修的也是本地层。`Init` 遍历 `.meta`，校验后加载；再扫 `.bucket`，删掉没有 `.meta` 的孤儿文件。它可以从 `.meta` 重建本地索引；从这条 Init 路径看，没有主动核对 Master 目录的步骤，也不会自动解决“Master 记得、本地已回滚”的竞态。
+## 回滚和重新登记分别作用于哪一层
 
-重新注册处理的是另一种情况：Heartbeat 收到 `SEGMENT_NOT_FOUND` 后，client 重新挂载本地段，并异步调用 `ReRegisterOffloadedObjects`，从 `.meta` 重新向 Master 报告副本。它覆盖的是“Master 忘了这个段/注册”，不等价于修复上面那个响应丢失窗口。
+**回滚先切断本地新读取。** `complete_handler` 返回非 OK 后，`RollbackCommittedBucket` 先移除本地索引，再等待已进入 I/O 的读请求结束。等待超时会先保留磁盘文件。正常等到读请求退出后，才清理文件。
 
-这三个动作层次不同：回滚清理本地提交，重启扫描重建本地索引，重新注册重建 Master 侧的副本记录。把它们都说成“恢复机制”，会掩盖各自能证明的范围。
+**响应丢失有一个待验证的竞态。** 源码注释按“Master 未被通知”解释本地回滚。若 Master 已登记 R3 后响应丢失，回滚可能留下仍被目录列出的副本，而持盘节点已经找不到索引。随后发送的 NACK 清的是下沉任务和引用，并不撤销已登记的 R3。这是基于代码顺序的推断，仍需注入响应丢失验证。
 
-## 文件存在，不足以证明掉电持久性
+**重启先重建索引，再上报可恢复项。** `BucketStorageBackend::Init` 扫描 `.meta`，检查对应数据文件和元数据，再重建本地索引。没有有效元数据的孤儿 `.bucket` 会进入清理流程。外层 `FileStorage::Init` 在 LOCAL_DISK 路径挂载磁盘段，再扫描并向 Master 上报保留的条目。磁盘上已清理的 bucket 不在这次上报范围。
 
-进程重启、机器掉电、磁盘故障，是不同的验证场景。
+**心跳发现磁盘段丢失，也会尝试重新登记。** `OffloadObjectHeartbeat` 返回 `SEGMENT_NOT_FOUND` 时，存储节点尝试重新挂载。重新挂载和重试心跳成功后，可异步扫描并调用 `ReRegisterOffloadedObjects` 上报。这个触发条件和单次登记 RPC 超时不同。
 
-数据文件写完，不表示缓存已经刷到稳定介质；使用 O_DIRECT，也不自动等价于完整的掉电持久化保证。开启 `USE_URING` 时，数据写入后还要 `datasync` 才写元数据；非 uring 回退路径只做 `vector_write`，没有显式 sync。于是可能出现 `.meta` 在、数据块在掉电后损坏的情况。
+## 掉电恢复还要检查同步顺序
 
-还需要核对数据、元数据文件、目录以及底层设备的同步行为。对于可重算 KV Cache，这些取舍可以根据成本决定，但系统文档应准确说明承诺。
+在这个版本的 bucket 写入路径里，io_uring 分支先完成数据写入，再调用 `datasync`，成功后才写元数据。非 io_uring 分支检查 `vector_write` 的长度后写元数据，该分支没有显式的数据文件同步。
+
+两条路径证明的范围不同。评估机器掉电后的承诺，还要检查元数据文件和目录是否同步，以及文件系统和设备如何处理缓存。进程重启时能扫描到文件，只能说明当时存在可用于重建索引的记录。
 
 ## 总结
 
-LOCAL_DISK 下沉完成、但通知 Master 出错时，本地已能定位这份副本，集群目录却不一定知道。关键区分是：RPC 确定未执行，还是 Master 已执行而响应丢失；仅凭返回值无法判断后者。
+K 的 R3 从落盘到可读要经过本地索引、Master 登记、磁盘节点读取和远端搬运。通知超时时先核对目录是否登记了 R3，再去持盘节点确认它是否仍能定位并读取 K。R3 的读回失败与 K 是否还有可用内存副本，是两项不同的判断。
 
-后续动作修的是不同层：回滚清理本地提交，重启扫描重建本地索引，重新注册重建 Master 侧记录。它们都不能单独消除“已登记但本地回滚”或“本地有、Master 不知道”的窗口。本篇只讨论 LOCAL_DISK bucket 路径；其他磁盘或 DFS 路径不能直接套用，文件存在也不等于掉电持久。
+下一篇把同一个 K 带回推理流程，计算一次磁盘命中还剩多少工作。
 
-**源码延伸**：FileStorage、存储后端、offload、promotion 与重新注册。版本基线为 `v0.3.13.post1`。
+**源码延伸（`v0.3.13.post1`）**
 
-- [BatchOffload 本地索引提交](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1809) · [complete_handler 与回滚](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1865)
-- [NotifyOffloadSuccess](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7365) · [LOCAL_DISK 副本写入](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7460)
-- [FileStorage::Init](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L131) · [ReRegisterOffloadedObjects](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L1195)
+- [本地索引提交和通知](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1809) · [本地回滚](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L2764)
+- [工作线程上报 NACK](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L545) · [Master 逐项处理登记与 NACK](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7365)
+- [磁盘读取](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1901) · [远端搬运](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L6898)
+- [数据文件写入与同步](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L2665)
+- [后端恢复索引](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L2104) · [启动时扫描并上报](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L186) · [心跳触发重新登记](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L703)
 
 [系列目录与排版说明](README.md)
 

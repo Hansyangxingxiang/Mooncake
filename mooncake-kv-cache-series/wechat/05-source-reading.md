@@ -1,42 +1,36 @@
-# Mooncake 报 REPLICA_IS_NOT_READY，该从哪查起？
+# 源码阅读番外｜Mooncake 报 REPLICA_IS_NOT_READY，该从哪查起？
 
-**摘要**：推理实例 B 查询 key `K` 收到 `REPLICA_IS_NOT_READY`，说明在这个查询时刻 K 的元数据存在，但没有任何副本通过 `IsReplicaReadable`。副本可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效；错误码本身分不出是哪一种，要沿查询路径逐站查证据。
+**摘要：** 推理实例 B 查询系列里那个 4 MiB 的示意对象 `K`，收到 `REPLICA_IS_NOT_READY`。在 `v0.3.13.post1` 的单 key 查询路径上，这表示对象元数据存在、可读副本为空，而且还有副本尚未标记移除。要找出具体原因，得看副本状态、句柄和端点。
 
-推理实例 B 查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
+实例 A 为 `K` 申请了内存副本 R1。实例 B 随后查询 `K`，Master 返回 `REPLICA_IS_NOT_READY`。该继续等 A 提交，还是去查失效的副本？
 
-这个错误容易被直接理解成“对象不存在”或“再等等就好”。但同一个返回码背后，可能是副本还在 `PROCESSING`，也可能是句柄或传输端点失效。只看一行错误日志，分不出是哪一种。
-
-第 3 篇已经讲过写入可见性：`PutStart` 之后、`PutEnd` 之前，副本停在 `PROCESSING`。这里不再重复系统解释，只跟 B 的一次查询走一遍源码，演示怎样从入口走到具体分支，以及每一站应该拿什么证据。
+主线第 3 篇讲的是 `PutStart` 之后、`PutEnd` 之前的写入窗口。这个番外沿 B 的单 key 查询追到实际分支，看看哪些证据能把写入中和副本失效区分开。 [主线第 3 篇 · Put 可见性](03-put-visibility.md) · [主线第 4 篇 · Get 和读租约](04-get-and-lease.md)
 
 ## 第一站：查询入口只把请求交给 Master
 
-B 的查询入口是 [`Client::Query`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)。它在发出 RPC 之前取一次本地 `steady_clock` 起点，然后调用 `master_client_.GetReplicaList(object_key)`，把返回的副本列表、读租约（lease）截止时间和 `object_checksum` 组装成 `QueryResult`。
+B 的查询入口是 `Client::Query`。它在调用 `master_client_.GetReplicaList(object_key)` 前记录本地 `steady_clock` 起点。RPC 成功时，客户端以起点加上返回的租约时长得到截止时间，再把它与副本列表、`object_checksum` 一起放进 `QueryResult`。
 
-这一站要看的证据是 RPC 返回状态。如果 Master 返回 `REPLICA_IS_NOT_READY`，`Client::Query` 不会在本地把它改写成别的错误，也不会在这里替调用方选副本。
-
-因此，看到这个错误时可以先排除一种解释：**它不是客户端本地缓存或副本选择阶段产生的，源头在 Master 的查询结果。**
+这一站记录 RPC 返回状态。Master 返回 `REPLICA_IS_NOT_READY` 时，`Client::Query` 原样返回错误，调用方还没有拿到可供选择的副本。
 
 ## 第二站：Master 先判断 key 是否存在
 
-进入 [`MasterService::GetReplicaList`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626)，第一道判断是 `accessor.Exists()`。key 不存在时，Master 直接返回 `OBJECT_NOT_FOUND`。
+进入 `MasterService::GetReplicaList`，Master 按请求的 key 和租户定位对象。第一道判断是 `accessor.Exists()`。对象不存在时，Master 直接返回 `OBJECT_NOT_FOUND`。
 
-所以，如果 B 收到的是 `REPLICA_IS_NOT_READY`，在这个查询时刻，K 的 `ObjectMetadata` 是存在的。至少可以排除“这个 key 从未写入过”。
-
-这里要注意范围：`OBJECT_NOT_FOUND` 也不总等于“从未存在”。对象可能曾经存在，但所有副本都已经被删除或移除；这条分支在第四站会再出现一次。
+B 收到 `REPLICA_IS_NOT_READY`，说明这次查询已经找到了 `K` 的 `ObjectMetadata`。如果稍后重查时返回 `OBJECT_NOT_FOUND`，还要核对两次请求的租户和时间点，以及这期间是否有副本移除。
 
 ## 第三站：可读副本是过滤出来的
 
-key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通过 [`IsReplicaReadable`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546) 检查的副本放进结果列表。
+找到对象后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通过 `IsReplicaReadable` 检查的副本放进结果列表。
 
 `IsReplicaReadable` 至少要求：
 
 - 副本状态是 `COMPLETE`；
-- 内存或 NoF 句柄仍然有效；
-- 传输端点没有被标记为失效。
+- 内存或 NoF 副本的相应句柄有效；
+- 对于读取端点字段的内存、NoF 或本地磁盘副本，其端点未进入失效集合。
 
 如果 R1 是在 `PutStart` 之后、`PutEnd` 之前被查询，它已经分配了地址，也挂在 K 的元数据下面，但状态仍是 `PROCESSING`。第一项检查就不通过。
 
-这一站能排除“对象根本没有副本”：副本结构已经存在，只是不满足可读条件。接下来还要看，过滤后的列表为什么没有变成另一种错误。
+如果已经看到 R1 为 `COMPLETE`，下一步就核对 Master 当时记录的句柄和端点状态。
 
 ## 第四站：空列表最后分成两种错误
 
@@ -47,35 +41,26 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 
 因此，`REPLICA_IS_NOT_READY` 还排除了“所有副本都已移除”。它表示列表为空，但至少有一个副本不是 `REMOVED`——可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效。
 
-把这条查询路径压成判断顺序，就是：
+一旦列表里有可读副本，这次查询便能返回副本描述和读租约。后续的字节搬运是主线 Get 和 Transfer Engine 要处理的下一步。
 
-1. key 不存在 → `OBJECT_NOT_FOUND`；
-2. key 存在，且存在通过 `IsReplicaReadable` 的副本 → 返回可读副本列表与读租约；
-3. key 存在，没有可读副本，且所有副本都是 `REMOVED` → `OBJECT_NOT_FOUND`；
-4. key 存在，没有可读副本，但不是全部 `REMOVED` → `REPLICA_IS_NOT_READY`。
+## 测试用例如何覆盖 `PROCESSING`
 
-## 用测试确认 `PROCESSING` 这一种情况
+基线 `v0.3.13.post1` 的 `SingleSliceMultiReplicaFlow` 使用一个 5 MiB 对象，配置 3 个内存副本。它用下面四步断言 `PROCESSING` 到 `COMPLETE` 的查询结果。
 
-基线 `v0.3.13.post1` 的 [`master_service_test.cpp`](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/tests/master_service_test.cpp#L4041) 中，`SingleSliceMultiReplicaFlow` 用例把这条路径固定下来：
+1. `PutStart` 返回 3 个 `PROCESSING` 副本，缓冲区长度与申请值一致。
+2. `GetReplicaList` 返回 `REPLICA_IS_NOT_READY`。
+3. `PutEnd(MEMORY)` 返回成功。
+4. 再查 `GetReplicaList`，返回 3 个 `COMPLETE` 副本，长度仍与申请值一致。
 
-| 操作 | 测试实际调用 | 直接观察到的结果 |
-|---|---|---|
-| 申请 | `PutStart` | 3 个副本，均为 `PROCESSING` |
-| 提交前查询 | `GetReplicaList` | 返回 `REPLICA_IS_NOT_READY` |
-| 提交 | `PutEnd(MEMORY)` | 返回成功 |
-| 提交后查询 | `GetReplicaList` | 3 个副本，均为 `COMPLETE` |
-
-四行里，测试直接断言的是副本状态、`PutStart` 返回的 slice 长度、查询错误码和提交后的副本列表。它没有执行字节传输，也没有验证读回的数据内容。因此，它证明的是“分配完成、`PutEnd` 之前查不到可读副本”这一种 `PROCESSING` 来源；句柄失效、传输端点失效等分支仍要靠第三站的条件和运行证据判断。
+上面是基线用例的静态阅读，本次没有执行该用例。它覆盖的是 Master 的元数据和可见性。运行中遇到相同错误码，仍要用日志和副本状态查明是提交未完成、句柄失效，还是端点失效。
 
 ## 总结
 
 遇到 `REPLICA_IS_NOT_READY`，按这个顺序查：
 
-1. 先确认 K 的 `ObjectMetadata` 是否存在——存在，才轮得到副本状态；
-2. 再看各副本是 `PROCESSING`、`COMPLETE` 还是 `REMOVED`，以及是否存在通过 `IsReplicaReadable` 的副本；
-3. 最后核对内存/NoF 句柄与传输端点是否有效。
-
-这三步分别对应第二站、第三站和第四站。测试只覆盖 `PROCESSING` 这一种来源；句柄失效、传输端点失效等分支需要对应的运行证据，不能只凭错误码判断。
+1. 用 B 的 key 和租户定位 Master 上的同一次查询。
+2. 看候选副本的状态。R1 仍是 `PROCESSING` 时，追 A 的提交结果。
+3. R1 已是 `COMPLETE` 时，核对相应句柄和端点在查询时刻的记录。
 
 **源码延伸**：`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。
 
@@ -85,4 +70,4 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 
 [系列目录与排版说明](README.md)
 
-[上一篇](04-get-and-lease.md) · [下一篇](06-transfer-lifecycle.md)
+[返回主线 · Transfer Engine 的完成与回收](06-transfer-lifecycle.md)
