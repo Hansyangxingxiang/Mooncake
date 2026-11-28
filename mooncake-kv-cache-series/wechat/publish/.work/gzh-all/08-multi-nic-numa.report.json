@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "generator": "gzh-design-skill",
+  "source": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/08-multi-nic-numa.md",
+  "source_type": "file",
+  "output": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/.work/gzh-all/08-multi-nic-numa.html",
+  "title": "双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？",
+  "editor_title_omitted": false,
+  "theme": "clean-light",
+  "profile": "technical",
+  "effective": {
+    "theme": "clean-light",
+    "profile": "technical",
+    "primary_color": "#1F4E79",
+    "background": "#FFFFFF",
+    "font_family": "-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif",
+    "font_size": 16,
+    "line_height": 1.8,
+    "paragraph_spacing": 12,
+    "code_theme": "github-light",
+    "h1_size": 24,
+    "h2_size": 20,
+    "h3_size": 17,
+    "h4_size": 16,
+    "inline_code_size": 14,
+    "caption_size": 14,
+    "quote_size": 15,
+    "table_size": 14,
+    "code_size": 13,
+    "h2_decoration": false,
+    "text_color": "#333333",
+    "muted_color": "#8A94A6",
+    "soft_color": "#EFF3F6",
+    "border_color": "#D2DCE4",
+    "quote_text_color": "#0E2336",
+    "code_background": "#F6F8FA",
+    "code_text_color": "#24292F"
+  },
+  "effective_sources": {
+    "theme": "default",
+    "profile": "cli",
+    "primary_color": "profile:technical",
+    "background": "profile:technical",
+    "font_family": "default",
+    "font_size": "profile:technical",
+    "line_height": "profile:technical",
+    "paragraph_spacing": "profile:technical",
+    "code_theme": "default",
+    "h1_size": "derived",
+    "h2_size": "derived",
+    "h3_size": "derived",
+    "h4_size": "derived",
+    "inline_code_size": "derived",
+    "caption_size": "derived",
+    "quote_size": "derived",
+    "table_size": "derived",
+    "code_size": "derived",
+    "h2_decoration": "derived",
+    "text_color": "derived",
+    "muted_color": "derived",
+    "soft_color": "derived",
+    "border_color": "derived",
+    "quote_text_color": "derived",
+    "code_background": "derived",
+    "code_text_color": "derived"
+  },
+  "config": {
+    "path": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/.gzh-theme.json",
+    "loaded": false
+  },
+  "duration_ms": 1,
+  "stats": {
+    "headings": 7,
+    "paragraphs": 48,
+    "list_items": 18,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "links": 9,
+    "words": 1903,
+    "read_minutes": 5
+  },
+  "images": [
+    {
+      "src": "images/08-multi-nic-numa-fig1.png",
+      "resolved": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/08-multi-nic-numa-fig1.png",
+      "kind": "local",
+      "exists": true,
+      "alt": "配图 1：源缓冲区与两张网卡的 NUMA 位置。",
+      "line": 15,
+      "heading": "场景：源缓冲区只在 NUMA 0",
+      "status": "local-file"
+    }
+  ],
+  "links": [
+    {
+      "text": "MultiTransport::selectTransport",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L581",
+      "external": true,
+      "line": 90,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "Topology::discover",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/topology.cpp#L625",
+      "external": true,
+      "line": 90,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "Topology::resolve",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/topology.cpp#L794",
+      "external": true,
+      "line": 90,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "Topology::selectDevice",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/topology.cpp#L761",
+      "external": true,
+      "line": 91,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "RdmaTransport::selectDevice",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp#L1155",
+      "external": true,
+      "line": 91,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "WorkerPool::selectPeerDevice",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/worker_pool.cpp#L52",
+      "external": true,
+      "line": 92,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "系列目录与排版说明",
+      "href": "README.md",
+      "external": false,
+      "line": 94,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    },
+    {
+      "text": "上一篇",
+      "href": "07-rdma-data-path.md",
+      "external": false,
+      "line": 96,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    },
+    {
+      "text": "下一篇",
+      "href": "09-cache-eviction.md",
+      "external": false,
+      "line": 96,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    }
+  ],
+  "mermaid": [],
+  "warnings": [
+    {
+      "code": "W006",
+      "severity": "warning",
+      "message": "本地图片需在发布前上传到公众号图床",
+      "line": 15,
+      "heading": "场景：源缓冲区只在 NUMA 0",
+      "path": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/08-multi-nic-numa-fig1.png"
+    }
+  ],
+  "needs_verification": [],
+  "errors": []
+}

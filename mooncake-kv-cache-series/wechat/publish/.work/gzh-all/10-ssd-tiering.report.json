@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "generator": "gzh-design-skill",
+  "source": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/10-ssd-tiering.md",
+  "source_type": "file",
+  "output": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/.work/gzh-all/10-ssd-tiering.html",
+  "title": "KV Cache 已经写进 SSD，为什么其他节点还可能读不到？",
+  "editor_title_omitted": false,
+  "theme": "clean-light",
+  "profile": "technical",
+  "effective": {
+    "theme": "clean-light",
+    "profile": "technical",
+    "primary_color": "#1F4E79",
+    "background": "#FFFFFF",
+    "font_family": "-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif",
+    "font_size": 16,
+    "line_height": 1.8,
+    "paragraph_spacing": 12,
+    "code_theme": "github-light",
+    "h1_size": 24,
+    "h2_size": 20,
+    "h3_size": 17,
+    "h4_size": 16,
+    "inline_code_size": 14,
+    "caption_size": 14,
+    "quote_size": 15,
+    "table_size": 14,
+    "code_size": 13,
+    "h2_decoration": false,
+    "text_color": "#333333",
+    "muted_color": "#8A94A6",
+    "soft_color": "#EFF3F6",
+    "border_color": "#D2DCE4",
+    "quote_text_color": "#0E2336",
+    "code_background": "#F6F8FA",
+    "code_text_color": "#24292F"
+  },
+  "effective_sources": {
+    "theme": "default",
+    "profile": "cli",
+    "primary_color": "profile:technical",
+    "background": "profile:technical",
+    "font_family": "default",
+    "font_size": "profile:technical",
+    "line_height": "profile:technical",
+    "paragraph_spacing": "profile:technical",
+    "code_theme": "default",
+    "h1_size": "derived",
+    "h2_size": "derived",
+    "h3_size": "derived",
+    "h4_size": "derived",
+    "inline_code_size": "derived",
+    "caption_size": "derived",
+    "quote_size": "derived",
+    "table_size": "derived",
+    "code_size": "derived",
+    "h2_decoration": "derived",
+    "text_color": "derived",
+    "muted_color": "derived",
+    "soft_color": "derived",
+    "border_color": "derived",
+    "quote_text_color": "derived",
+    "code_background": "derived",
+    "code_text_color": "derived"
+  },
+  "config": {
+    "path": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/.gzh-theme.json",
+    "loaded": false
+  },
+  "duration_ms": 2,
+  "stats": {
+    "headings": 7,
+    "paragraphs": 35,
+    "list_items": 3,
+    "code_blocks": 0,
+    "tables": 1,
+    "images": 2,
+    "links": 9,
+    "words": 2020,
+    "read_minutes": 6
+  },
+  "images": [
+    {
+      "src": "images/10-ssd-tiering-fig1.png",
+      "resolved": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/10-ssd-tiering-fig1.png",
+      "kind": "local",
+      "exists": true,
+      "alt": "配图 1：副本组合的三种状态。",
+      "line": 17,
+      "heading": "下沉通常是增加副本",
+      "status": "local-file"
+    },
+    {
+      "src": "images/10-ssd-tiering-fig2.png",
+      "resolved": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/10-ssd-tiering-fig2.png",
+      "kind": "local",
+      "exists": true,
+      "alt": "配图 2：从本地落盘到 Master 登记。",
+      "line": 29,
+      "heading": "写入与通知的顺序",
+      "status": "local-file"
+    }
+  ],
+  "links": [
+    {
+      "text": "BatchOffload 本地索引提交",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1809",
+      "external": true,
+      "line": 82,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "complete_handler 与回滚",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1865",
+      "external": true,
+      "line": 82,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "NotifyOffloadSuccess",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7365",
+      "external": true,
+      "line": 83,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "LOCAL_DISK 副本写入",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7460",
+      "external": true,
+      "line": 83,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "FileStorage::Init",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L131",
+      "external": true,
+      "line": 84,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "ReRegisterOffloadedObjects",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/file_storage.cpp#L1195",
+      "external": true,
+      "line": 84,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "系列目录与排版说明",
+      "href": "README.md",
+      "external": false,
+      "line": 86,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    },
+    {
+      "text": "上一篇",
+      "href": "09-cache-eviction.md",
+      "external": false,
+      "line": 88,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    },
+    {
+      "text": "下一篇",
+      "href": "11-kv-reuse-and-inference.md",
+      "external": false,
+      "line": 88,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    }
+  ],
+  "mermaid": [],
+  "warnings": [
+    {
+      "code": "W006",
+      "severity": "warning",
+      "message": "本地图片需在发布前上传到公众号图床",
+      "line": 17,
+      "heading": "下沉通常是增加副本",
+      "path": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/10-ssd-tiering-fig1.png"
+    },
+    {
+      "code": "W006",
+      "severity": "warning",
+      "message": "本地图片需在发布前上传到公众号图床",
+      "line": 29,
+      "heading": "写入与通知的顺序",
+      "path": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/10-ssd-tiering-fig2.png"
+    }
+  ],
+  "needs_verification": [],
+  "errors": []
+}

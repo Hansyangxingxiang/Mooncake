@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "generator": "gzh-design-skill",
+  "source": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/04-get-and-lease.md",
+  "source_type": "file",
+  "output": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/.work/gzh-all/04-get-and-lease.html",
+  "title": "KV 已经读回本地，为什么还会返回 LEASE_EXPIRED？",
+  "editor_title_omitted": false,
+  "theme": "clean-light",
+  "profile": "technical",
+  "effective": {
+    "theme": "clean-light",
+    "profile": "technical",
+    "primary_color": "#1F4E79",
+    "background": "#FFFFFF",
+    "font_family": "-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif",
+    "font_size": 16,
+    "line_height": 1.8,
+    "paragraph_spacing": 12,
+    "code_theme": "github-light",
+    "h1_size": 24,
+    "h2_size": 20,
+    "h3_size": 17,
+    "h4_size": 16,
+    "inline_code_size": 14,
+    "caption_size": 14,
+    "quote_size": 15,
+    "table_size": 14,
+    "code_size": 13,
+    "h2_decoration": false,
+    "text_color": "#333333",
+    "muted_color": "#8A94A6",
+    "soft_color": "#EFF3F6",
+    "border_color": "#D2DCE4",
+    "quote_text_color": "#0E2336",
+    "code_background": "#F6F8FA",
+    "code_text_color": "#24292F"
+  },
+  "effective_sources": {
+    "theme": "default",
+    "profile": "cli",
+    "primary_color": "profile:technical",
+    "background": "profile:technical",
+    "font_family": "default",
+    "font_size": "profile:technical",
+    "line_height": "profile:technical",
+    "paragraph_spacing": "profile:technical",
+    "code_theme": "default",
+    "h1_size": "derived",
+    "h2_size": "derived",
+    "h3_size": "derived",
+    "h4_size": "derived",
+    "inline_code_size": "derived",
+    "caption_size": "derived",
+    "quote_size": "derived",
+    "table_size": "derived",
+    "code_size": "derived",
+    "h2_decoration": "derived",
+    "text_color": "derived",
+    "muted_color": "derived",
+    "soft_color": "derived",
+    "border_color": "derived",
+    "quote_text_color": "derived",
+    "code_background": "derived",
+    "code_text_color": "derived"
+  },
+  "config": {
+    "path": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/.gzh-theme.json",
+    "loaded": false
+  },
+  "duration_ms": 3,
+  "stats": {
+    "headings": 6,
+    "paragraphs": 61,
+    "list_items": 26,
+    "code_blocks": 0,
+    "tables": 0,
+    "images": 1,
+    "links": 9,
+    "words": 2186,
+    "read_minutes": 6
+  },
+  "images": [
+    {
+      "src": "images/04-get-and-lease-fig1.png",
+      "resolved": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/04-get-and-lease-fig1.png",
+      "kind": "local",
+      "exists": true,
+      "alt": "配图 1：一次跨过租约截止时间的读取。",
+      "line": 17,
+      "heading": "一次慢读的时间线",
+      "status": "local-file"
+    }
+  ],
+  "links": [
+    {
+      "text": "Client::Get",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1352",
+      "external": true,
+      "line": 109,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "IsLeaseExpired",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/client_service.h#L60",
+      "external": true,
+      "line": 109,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "Client::Query（读租约起点）",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211",
+      "external": true,
+      "line": 110,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "SelectBestReplica",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica_selection.h#L123",
+      "external": true,
+      "line": 111,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "GetReplicaList",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626",
+      "external": true,
+      "line": 112,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "RealClient::get_buffer_internal（LOCAL_DISK 分支）",
+      "href": "https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/real_client.cpp#L2815",
+      "external": true,
+      "line": 112,
+      "heading": "总结",
+      "kind": "remote",
+      "status": "unchecked"
+    },
+    {
+      "text": "系列目录与排版说明",
+      "href": "README.md",
+      "external": false,
+      "line": 114,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    },
+    {
+      "text": "上一篇",
+      "href": "03-put-visibility.md",
+      "external": false,
+      "line": 116,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    },
+    {
+      "text": "下一篇",
+      "href": "05-source-reading.md",
+      "external": false,
+      "line": 116,
+      "heading": "总结",
+      "kind": "local",
+      "status": "local"
+    }
+  ],
+  "mermaid": [],
+  "warnings": [
+    {
+      "code": "W006",
+      "severity": "warning",
+      "message": "本地图片需在发布前上传到公众号图床",
+      "line": 17,
+      "heading": "一次慢读的时间线",
+      "path": "/builder_img/z0/yangxingxiang/github/yangxx_github/Mooncake/mooncake-kv-cache-series/wechat/publish/images/04-get-and-lease-fig1.png"
+    }
+  ],
+  "needs_verification": [],
+  "errors": []
+}
