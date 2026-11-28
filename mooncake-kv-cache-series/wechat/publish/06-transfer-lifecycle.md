@@ -1,97 +1,55 @@
-# Transfer Engine 返回成功，数据就传完了吗？
+# Mooncake 提交失败后，为什么还不能释放源缓冲区？
 
-**摘要**：一个 batch 跨两个后端提交：后端 A 已接收任务，后端 B 提交失败。错误返回只说明后端 B 没有提交成功；后端 A 已接收的 task 仍可能执行。调用方要等所有 task 到达终态、且 `freeBatchID` 返回 `OK`，才能释放请求描述与数据缓冲区。
+**摘要：** Transfer Engine 的提交成功只确认后端已接受工作。出现部分提交或状态查询先报错时，其他 task 仍可能在执行。调用方要跟踪每项工作的完成状态，并用 `freeBatchID` 确认 batch 可以回收。
 
-一次传输里，调用方提交了一个跨两个后端的 batch：前两个请求进入后端 A，第三个请求进入后端 B。后端 A 已经接收任务，后端 B 随后提交失败，错误码返回给了调用方。
+继续用前几篇的 **4 MiB 对象 `K`**。这次单独看 Transfer Engine（TE），假设调用方把 `K` 发往 R1、R2 的两条写请求放进同一个 batch，两个目标由不同的传输后端处理。这个例子用于观察 TE 的分组提交，Store 普通 Put 有独立的副本提交流程。[Put 提交流程](03-put-visibility.md)
 
-现在还不能释放源缓冲区。
+假设 R1 对应的后端先接受请求，R2 对应的后端随后报错。调用方已经看见提交失败，但 R1 那条写可能还在队列里，网卡也可能正在读 `K` 的源缓冲区。
 
-先回到后端 A。它接收的任务仍可能执行：请求已经进入队列或设备路径，设备仍可能访问那段内存。错误码只说明后端 B 没有提交成功，没有撤销后端 A 已经接收的工作。
+## 从 batch 看到 slice
 
-这里要分清三件事：某个请求被提交、部分 task 已被后端接收、整批传输最终完成。后端 A 接收，只说明中间那件。
+调用方用 batch 管理一组工作。在这个普通提交示例里，两条写请求各对应一个 task。后端可以再把每个 task 拆成多个 slice，拆分方式和片段大小由后端决定。
 
-哪些任务还在运行、调用方靠什么判断，要先看清 batch、task、slice 的组织关系。
+![配图1：发往 R1 的写请求如何进入后端。](images/06-transfer-lifecycle-fig1.png)
 
-## 一个 batch 里有三种层次
+*图注：只展开 R1 这一条 task。R2 对应另一条 task，两个 task 有各自的进度。*
 
-调用方通常以 batch 管理一组工作。内部可能包含多个 task，一个 task 又可能拆成多个 slice，具体后端负责把这些片段交给网络或设备执行。
+## 提交前拒绝与部分提交
 
-![配图 1：传输任务层级。](images/06-transfer-lifecycle-fig1.png)
+在本文的版本里，`MultiTransport::submitTransfer` 先检查普通提交的批次容量，再为所有请求选 transport。容量不够或目标段无法选出 transport，此次调用会在向后端分派前返回。若这个 BatchID 之前已经装入任务，还要继续管理那些任务。
 
-图注：层级只表示组织关系；不同后端对 slice 的拆分与完成聚合方式可能不同。
+进入分派阶段后，`MultiTransport` 按 transport 分组调用后端。某一组返回错误，它仍会尝试剩余分组，最后返回非 OK 状态。分组遍历次序也无法由请求顺序推出。
 
-这种分层让接口能够批量组织请求，也让后端有机会根据地址、长度和路径进行调度。但它同时意味着：单个片段完成，不代表整个请求结束；某个请求失败，也不代表批次内所有工作已经停止。
+回到 `K`。只要发往 R1 的请求已被接受，错误返回就没有撤销这条写。即使 R2 先报错，R1 也可能在之后被分派。要判断已经接受了哪些工作，需要看 task 状态和后端记录。整批直接重交可能与仍在进行的写重叠。
 
-## 一个跨两个后端的 batch
+## 超时、失败与完成各能证明什么
 
-回到开头那个 batch：3 个请求按 transport 分成两组。
+`getTransferStatus` 有两层结果。接口返回的 `Status::OK` 表示查询成功，task 的传输结果要看输出字段里的状态。以此版本的 RDMA 路径为例：
 
-`MultiTransport::submitTransfer` 先按请求建立 task，再按 transport 分组提交。后端 A 接受了前两个请求的工作；后端 B 在提交第三个请求时返回错误。
+- **`WAITING`**：task 的 slice 还没全部收尾。若启用 slice 超时，查询可以把一项仍在等待的工作报告为 `TIMEOUT`。这段检查只改查询结果，未取消设备操作。
+- **`FAILED`**：对 RDMA task，所有 slice 已记账且至少一项失败时，查询会报告失败并设置完成标记。此前已完成的 slice 可能已把部分字节写到远端。
+- **`COMPLETED`**：在这里表示 task 的 slice 全部成功。若写入服务于 Store Put，仍需 Store 提交流程才会让副本可查询。
 
-这里有两个时间点不能合并。后端 A 接受工作，只是 task 进入后端队列或设备路径，不代表数据传输完成；后端 B 返回错误属于提交阶段的错误，也不代表后端 A 已经接受的工作被撤销。
+`getBatchTransferStatus` 遇到某个 task 失败或超时就可能报告整批 `FAILED`，并提前返回。它给出的是整批传输结果。收尾时要逐项查看，避免后面尚未检查到的 task 被误当成已经结束。
 
-`submitTransfer` 不会因为后端 B 失败就停止处理其他分组，也不会回头取消后端 A 已接收的 task。它继续尝试剩余分组，最后返回一个非 OK 状态。
+## 什么时候可以回收 batch
 
-## 错误什么时候返回，调用方还能看到什么
+错误返回后，保留 BatchID、原始请求向量和传输缓冲区。当前路径下，task 持有指向原向量元素的指针，后端可能继续访问缓冲区。因此收尾前要保持描述有效、缓冲区仍已注册，也别将这块内存交给下一次写入。
 
-错误是在遍历完各 transport 分组后聚合返回的，不是在第一个后端失败的那一刻立刻返回。因此，调用方收到错误时，其他分组可能已经被提交。
+继续用逐项状态查询和后端的完成机制推进收尾，再调用 `freeBatchID`。本文版本的实现逐项检查 `is_finished`。只要有一项还没完成，就返回 `BatchBusy` 并保留 batch；返回 `OK` 时才删除批次描述。之后按各自所有权解除注册或复用缓冲区。
 
-调用方能观察到的状态有粒度限制：
-
-- `getTransferStatus(batch_id, task_id)` 按 task 返回 `WAITING`、`COMPLETED`、`FAILED`、`TIMEOUT` 和 `transferred_bytes`；
-- `getBatchTransferStatus` 把多个 task 聚合成 `WAITING`、`COMPLETED`、`FAILED`。
-
-这些不是每个 WR 的中间状态。调用方可以看到 task 级别是否到达终态，但不能据此推断某个具体设备操作何时停止。
-
-## 最早什么时候可以释放
-
-释放条件比“接口返回错误”更严格：`freeBatchID` 遍历 batch 的 task，只有所有 task 的 `is_finished` 都为真，才删除 `BatchDesc` 并返回 `Status::OK`；否则返回 `Status::BatchBusy`，消息是 `BatchID cannot be freed until all tasks are done`。
-
-`BatchBusy` 只表示“还有工作没结束”，不是另一种完成状态。
-
-把收尾阶段和返回结果分开看：
-
-1. `allocateBatchID` 分配 batch；
-2. `submitTransfer` 提交，可能跨多个后端；
-3. 查询 task 状态，确认是否都已到达终态；
-4. 尝试 `freeBatchID`。
-
-`freeBatchID` 的三种结果：
-
-- `Status::OK`：所有 task 已结束，`BatchDesc` 已释放。
-- `Status::BatchBusy`：仍有 task 未结束，batch 仍存在；继续管理，不能释放请求描述与数据缓冲区。
-- 其他错误：释放未完成，batch 仍存在；不能把它当成已回收。
-
-因此，最早的安全释放点是：所有已提交 task 都到达终态，且 `freeBatchID` 返回 `OK`。如果返回 `BatchBusy` 或其他错误，batch 仍然存在，调用方还要继续管理它。
-
-## 三种生命周期落到这条路径
-
-请求描述、数据缓冲区、batch 资源的生命周期，不一定完全相同。仍以这个跨后端的 batch 为例：
-
-- 请求描述：task 里的 `request` 指向调用方传入的 `TransferRequest` 向量元素（`task.request = &entries[i]`），不是深拷贝。`getTransferStatus` 仍会通过该指针读取请求长度，所以调用方必须让该向量在原位保持有效，直到 batch 被释放。后端 B 提交失败，不会让这个要求消失。
-- 数据缓冲区：`Slice` 保存本地地址、长度和远端地址；本地缓冲区必须保持注册且不被释放，直到传输完成。后端 A 已接收的工作可能仍会访问它，不能因为整体返回错误就提前释放。
-- BatchID：类型是 `uint64_t`；`MultiTransport` 把新建的 `BatchDesc*` 转成这个整数返回，`freeBatchID` 再转回指针。调用方只能把它当不透明句柄。只有 `freeBatchID` 返回 `OK` 才删除 `BatchDesc`；返回 `BatchBusy` 或其他错误时，batch 仍然存在。
-
-这三个对象不一定同时释放。释放 batch 只处理 batch 资源；数据缓冲区是否还能被后端访问，要单独判断。数据到达也不代表请求描述可以立刻废弃。
-
-## 错误已报告，设备可能仍在访问
-
-接口返回错误，说明调用方已经知道“这次提交没有全部成功”。它不说明后端 A 已经停止访问请求描述或数据缓冲区。
-
-读代码时，应追踪后端是否持有引用或指针，以及最后一次可能访问发生在什么时候。这也是为什么传输层问题经常表现为偶现错误：正常情况下工作结束得快，错误路径或压力场景却会暴露过早释放。
+如果状态一直无法推进，要按所用 transport 的退出与清理机制排查。仅凭查询超时，无法证明设备已经停止访问内存。
 
 ## 总结
 
-`submitTransfer` 返回成功，只表示请求已被接受；某个 transport 失败后返回错误，也不表示其他已接收的 task 已经停止。调用方最早的安全释放点是：所有已提交 task 都到达终态，且 `freeBatchID` 返回 `Status::OK`。
+对于示意对象 `K`，R2 的提交错误可以先返回，而 R1 的写仍在执行。排障时先定位失败发生在分派前还是分派中，再看每个 task 如何收尾。`TIMEOUT` 记录等待超时，`freeBatchID` 的结果才用于确认批次资源何时回收。
 
-`BatchBusy` 或其他错误都表示 batch 仍存在；此时请求描述、数据缓冲区和 BatchID 还要继续管理。错误已报告，设备可能仍在访问，这正是过早释放会变成偶现问题的原因。
+**源码延伸**　版本基线为 `v0.3.13.post1`。
 
-**源码延伸**：`allocateBatchID`、`submitTransfer`、状态查询与 `freeBatchID`。版本基线为 `v0.3.13.post1`。
-
-- [TransferEngine::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transfer_engine.h#L213) · [Status::BatchBusy](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/common/base/status.h#L175) · [BatchID 类型](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transport/transport.h#L53)
 - [MultiTransport::submitTransfer](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L130) · [MultiTransport::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L108)
-- [MultiTransport::getBatchTransferStatus](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L363)
+- [task 查询与超时](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L256) · [batch 状态聚合](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L363)
+- [RDMA task 完成判定](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp#L1023)
 
 [系列目录与排版说明](README.md)
 
-[上一篇](05-source-reading.md) · [下一篇](07-rdma-data-path.md)
+[上一篇](04-get-and-lease.md) · [下一篇](07-rdma-data-path.md)

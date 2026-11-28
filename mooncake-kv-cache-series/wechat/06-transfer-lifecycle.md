@@ -1,4 +1,4 @@
-# Transfer Engine 返回成功，数据就传完了吗？
+# Mooncake 提交失败后，为什么还不能释放源缓冲区？
 
 **摘要：** Transfer Engine 的提交成功只确认后端已接受工作。出现部分提交或状态查询先报错时，其他 task 仍可能在执行。调用方要跟踪每项工作的完成状态，并用 `freeBatchID` 确认 batch 可以回收。
 

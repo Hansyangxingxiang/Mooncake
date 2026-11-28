@@ -16,7 +16,7 @@ B 的查询入口是 `Client::Query`。它在调用 `master_client_.GetReplicaLi
 
 进入 `MasterService::GetReplicaList`，Master 按请求的 key 和租户定位对象。第一道判断是 `accessor.Exists()`。对象不存在时，Master 直接返回 `OBJECT_NOT_FOUND`。
 
-B 收到 `REPLICA_IS_NOT_READY`，说明这次查询已经找到了 `K` 的 `ObjectMetadata`。如果稍后重查时返回 `OBJECT_NOT_FOUND`，还要核对两次请求的租户和时间点，以及这期间是否有副本移除。
+B 收到 `REPLICA_IS_NOT_READY`，说明查询当时 Master 已有 `K` 的 `ObjectMetadata`。要判断写入是否提交，还要看副本状态和 `PutEnd` 的结果。如果稍后重查时返回 `OBJECT_NOT_FOUND`，还要核对两次请求的租户和时间点，以及这期间是否有副本移除。
 
 ## 第三站：可读副本是过滤出来的
 
@@ -54,13 +54,9 @@ B 收到 `REPLICA_IS_NOT_READY`，说明这次查询已经找到了 `K` 的 `Obj
 
 上面是基线用例的静态阅读，本次没有执行该用例。它覆盖的是 Master 的元数据和可见性。运行中遇到相同错误码，仍要用日志和副本状态查明是提交未完成、句柄失效，还是端点失效。
 
-## 总结
+## 手上只有一条报错，下一条找什么？
 
-遇到 `REPLICA_IS_NOT_READY`，按这个顺序查：
-
-1. 用 B 的 key 和租户定位 Master 上的同一次查询。
-2. 看候选副本的状态。R1 仍是 `PROCESSING` 时，追 A 的提交结果。
-3. R1 已是 `COMPLETE` 时，核对相应句柄和端点在查询时刻的记录。
+先用 key、租户和时间把 B 的查询与 A 的写入对齐，查 Master 当时有没有接受 `PutEnd`。确认 R1 在查询前已提交，再检查那个时刻的句柄和端点记录。晚一些看到的副本状态只能说明重查时的情况。
 
 **源码延伸**：`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。
 

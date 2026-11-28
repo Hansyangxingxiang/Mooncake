@@ -8,7 +8,7 @@
 2. [一个对象的两份副本占用哪段内存？](02-objects-and-replicas.md)
 3. [Put 写完什么时候可见？](03-put-visibility.md)
 4. [Get 读回字节为什么仍可能过期？](04-get-and-lease.md)
-5. [Transfer Engine 返回后，何时能释放资源？](06-transfer-lifecycle.md)
+5. [Mooncake 提交失败后，为什么还不能释放源缓冲区？](06-transfer-lifecycle.md)
 6. [一次 RDMA WRITE 由谁确认完成？](07-rdma-data-path.md)
 7. [双网卡传输会走哪条路径？](08-multi-nic-numa.md)
 8. [为什么淘汰候选会被跳过？](09-cache-eviction.md)
@@ -27,10 +27,10 @@
 
 ## 排版与预览
 
-- 公众号标题栏使用一级标题，正文从摘要开始。正文建议 16 px、行距 1.75，图注建议 14 px。
+- 一级标题填入公众号标题栏，摘要填入摘要栏，正文从摘要后的开场段开始。正文建议 16 px、行距 1.75，图注建议 14 px。
 - 正文里的 Mermaid 和 `figures/` 下的 Graphviz 文件是图源。主线首篇的配图 1、RDMA 篇的配图 2 使用 DOT 作为手机排版图源，其余使用正文中的 Mermaid。
 - 导出后以手机正文宽度检查字号、箭头和图注，再将图片插入公众号编辑器。把上一篇、下一篇等相对链接换成对应的已发布文章链接。
-- `publish/` 存放此前的发布稿快照。本版从当前 Markdown 与图源在临时目录预览。`build_publish.py` 的参数仍按文件索引选篇，整理发布顺序时以本页主线目录为准，并按上述图源导出两张 DOT 图。
+- 在[发布稿目录](publish/README.md)打开当前版本的 HTML、Markdown 或排版报告。`build_publish.py` 的参数仍按文件索引选篇，整理发布顺序时以本页主线目录为准，并按上述图源导出两张 DOT 图。
 
 ## 版本与证据边界
 
