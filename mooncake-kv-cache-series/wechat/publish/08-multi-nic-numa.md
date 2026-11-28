@@ -1,6 +1,6 @@
 # 双网卡跑 Mooncake，RDMA 流量到底走了哪张卡？
 
-**摘要：**同一段源内存，拓扑上更近的网卡、注册与连接条件允许的网卡、实际提交 WR 的网卡，可能是三张。本文用一台双 NUMA、双网卡主机跟一次传输，并用只改本地 HCA 的对照验证选路。
+**摘要**：同一段源内存，拓扑上更近的网卡、注册与连接条件允许的网卡、实际提交 WR 的网卡，可能是三张。本文用一台双 NUMA、双网卡主机跟一次传输，并用只改本地 HCA 的对照验证选路。
 
 一台服务器上有两个 NUMA 节点，每个节点各挂一张 RDMA 网卡。推理实例 A 的发送进程绑定在 NUMA 0 的 CPU 上，源缓冲区也分配在 NUMA 0；两张网卡都能连到远端同一个 R1 Segment。
 
@@ -85,7 +85,7 @@ A 发起一次主机内存到 R1 的传输。拓扑上更近的网卡，未必�
 
 最小对照只改“允许使用的本地 HCA”，其余条件固定；确认源内存落点后，再用发送/接收计数交叉验证。本文尚未实测，没有给出吞吐或延迟结论；只有选卡证据时，结论也只限于这次选卡行为。
 
-**源码延伸：**Topology、MultiTransport、HCA 与 rail 选择。版本基线为 `v0.3.13.post1`。
+**源码延伸**：Topology、MultiTransport、HCA 与 rail 选择。版本基线为 `v0.3.13.post1`。
 
 - [MultiTransport::selectTransport](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L581) · [Topology::discover](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/topology.cpp#L625) · [Topology::resolve](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/topology.cpp#L794)
 - [Topology::selectDevice](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/topology.cpp#L761) · [RdmaTransport::selectDevice](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp#L1155)

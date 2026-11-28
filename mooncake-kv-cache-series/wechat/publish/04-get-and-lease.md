@@ -1,6 +1,6 @@
 # KV 已经读回本地，为什么还会返回 LEASE_EXPIRED？
 
-**摘要：**推理实例 B 从 R1 读回字节时，客户端记录的租约截止时间已经过去；`Client::Get` 在传输后检查租约，返回 `LEASE_EXPIRED` 并拒绝这次结果。R1 是否回收，仍由 Master 侧决定。
+**摘要**：推理实例 B 从 R1 读回字节时，客户端记录的租约截止时间已经过去；`Client::Get` 在传输后检查租约，返回 `LEASE_EXPIRED` 并拒绝这次结果。R1 是否回收，仍由 Master 侧决定。
 
 实例 B 的请求命中前缀 key `K`，向 Master 查询后拿到可读副本列表和一份读租约（lease）；列表里带着 R1 的副本描述。客户端选中 R1，开始从 R1 读取这段 KV。
 
@@ -22,7 +22,7 @@ Master 在返回可读副本列表时授予租约，并在响应里带上 TTL。
 
 这条路径是“尽力读 + 事后否决”：先完成传输，再判断这次读取是否仍在承诺窗口内。
 
-**分析：**好处是实现简单，不需要在传输前阻塞等待；代价是租约过期时已经浪费了一次带宽。对 KV Cache 这种“读失败可以重算”的场景，这个取舍是成立的。
+**分析**：好处是实现简单，不需要在传输前阻塞等待；代价是租约过期时已经浪费了一次带宽。对 KV Cache 这种“读失败可以重算”的场景，这个取舍是成立的。
 
 ## 已定位、已搬完、可接受
 
@@ -104,7 +104,7 @@ Master 只过滤并返回可读副本列表，不替客户端选副本。选择�
 
 `LOCAL_DISK` 全量 offload 分支是明确例外：它走 `batch_get_into_offload_object_internal`，之后只做校验，不经过同一处租约检查。因此，这条结论不能外推到所有磁盘读取。
 
-**源码延伸：**`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。
+**源码延伸**：`Client::Get`、`Client::Query`、`QueryResult::IsLeaseExpired`、`SelectBestReplica`、`GetReplicaList`、`RealClient::get_buffer_internal`。
 
 - [Client::Get](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1352) · [IsLeaseExpired](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/client_service.h#L60)
 - [Client::Query（读租约起点）](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)

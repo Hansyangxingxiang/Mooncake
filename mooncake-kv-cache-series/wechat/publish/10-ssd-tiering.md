@@ -1,6 +1,6 @@
 # KV Cache 已经写进 SSD，为什么其他节点还可能读不到？
 
-**摘要：**数据文件、本地索引、Master 登记是三个不同层次。通知 `NotifyOffloadSuccess` 返回错误或超时时，本地已能定位这份副本，其他节点却不一定能读到；返回值只能证明这次 RPC 没成功，不能区分 Master 未执行还是已执行而响应丢失。
+**摘要**：数据文件、本地索引、Master 登记是三个不同层次。通知 `NotifyOffloadSuccess` 返回错误或超时时，本地已能定位这份副本，其他节点却不一定能读到；返回值只能证明这次 RPC 没成功，不能区分 Master 未执行还是已执行而响应丢失。
 
 Mooncake 的 KV Cache 下沉数据已经写进本地 SSD：bucket 的数据文件、元数据文件都在，本地 `object_bucket_map_` 也已提交。接下来要通知 Master 登记这份磁盘副本，通知却返回错误或超时。
 
@@ -47,7 +47,7 @@ Mooncake 的 KV Cache 下沉数据已经写进本地 SSD：bucket 的数据文�
 
 这段回滚逻辑适用于“请求确实没有到达 Master”的情况。但一个非 OK 结果也可能来自请求已经发出后的超时或连接中断。此时客户端只知道这次 RPC 没有拿到成功响应，不能区分“Master 没执行”与“Master 执行了，但响应丢了”。
 
-**分析（推断）：**如果 Master 实际登记成功，而客户端按“未通知”回滚并删除了文件，Master 就可能向其他 Client 发布一个本节点已经无法读取的副本。这是从当前代码路径推导出的风险，不是已在生产验证的行为；源码注释的假设是“通知失败即未登记”。
+**分析（推断）**：如果 Master 实际登记成功，而客户端按“未通知”回滚并删除了文件，Master 就可能向其他 Client 发布一个本节点已经无法读取的副本。这是从当前代码路径推导出的风险，不是已在生产验证的行为；源码注释的假设是“通知失败即未登记”。
 
 反过来，如果客户端不回滚，只保留本地文件和索引，Master 又没有登记，这份副本就是“本地能读、集群目录不知道”的幽灵副本。两个方向都需要额外的对账信息，不能只靠这次通知的返回值判断。
 
@@ -77,7 +77,7 @@ LOCAL_DISK 下沉完成、但通知 Master 出错时，本地已能定位这份�
 
 后续动作修的是不同层：回滚清理本地提交，重启扫描重建本地索引，重新注册重建 Master 侧记录。它们都不能单独消除“已登记但本地回滚”或“本地有、Master 不知道”的窗口。本篇只讨论 LOCAL_DISK bucket 路径；其他磁盘或 DFS 路径不能直接套用，文件存在也不等于掉电持久。
 
-**源码延伸：**FileStorage、存储后端、offload、promotion 与重新注册。版本基线为 `v0.3.13.post1`。
+**源码延伸**：FileStorage、存储后端、offload、promotion 与重新注册。版本基线为 `v0.3.13.post1`。
 
 - [BatchOffload 本地索引提交](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1809) · [complete_handler 与回滚](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/storage_backend.cpp#L1865)
 - [NotifyOffloadSuccess](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7365) · [LOCAL_DISK 副本写入](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L7460)

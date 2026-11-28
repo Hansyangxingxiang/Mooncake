@@ -1,6 +1,6 @@
 # 已经选中要淘汰的 KV，为什么又被跳过了？
 
-**摘要：**census 先扫描出候选；读方随后查询同一个 key 并拿到读租约，真正驱逐前重检，发现租约未过期，于是跳过 K。候选只是快照，读租约、hard pin、soft pin 和后台引用各保护一层。
+**摘要**：census 先扫描出候选；读方随后查询同一个 key 并拿到读租约，真正驱逐前重检，发现租约未过期，于是跳过 K。候选只是快照，读租约、hard pin、soft pin 和后台引用各保护一层。
 
 ## 从一次候选扫描说起
 
@@ -87,7 +87,7 @@ hard pin 与 soft pin 也不能混为一谈。hard pin 直接阻止淘汰；soft
 
 读租约、hard pin、soft pin 和后台引用计数保护的不是同一件事。淘汰 MEMORY 副本也不等于删除对象：只要还有 LOCAL_DISK/DFS 副本，元数据仍可能有效；触发淘汰也不等于立即释放空间。下沉如何完成、内存副本何时回收，见第 10 篇。
 
-**源码延伸：**读租约（lease）、pin、census、驱逐重检与元数据清理。版本基线为 `v0.3.13.post1`。
+**源码延伸**：读租约（lease）、pin、census、驱逐重检与元数据清理。版本基线为 `v0.3.13.post1`。
 
 - [GetReplicaList / 读租约](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [GrantReadLease](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/master_service.h#L1322)
 - [BatchEvict census](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L9954) · [驱逐前重检](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L10530) · [IsEvictableMemoryReplica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3570)

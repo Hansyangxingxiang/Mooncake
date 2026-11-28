@@ -1,6 +1,6 @@
 # Mooncake 报 REPLICA_IS_NOT_READY，该从哪查起？
 
-**摘要：**推理实例 B 查询 key `K` 收到 `REPLICA_IS_NOT_READY`，说明在这个查询时刻 K 的元数据存在，但没有任何副本通过 `IsReplicaReadable`。副本可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效；错误码本身分不出是哪一种，要沿查询路径逐站查证据。
+**摘要**：推理实例 B 查询 key `K` 收到 `REPLICA_IS_NOT_READY`，说明在这个查询时刻 K 的元数据存在，但没有任何副本通过 `IsReplicaReadable`。副本可能仍在 `PROCESSING`，也可能句柄或传输端点已经失效；错误码本身分不出是哪一种，要沿查询路径逐站查证据。
 
 推理实例 B 查询 key `K`，Master 返回 `REPLICA_IS_NOT_READY`。
 
@@ -79,7 +79,7 @@ key 存在之后，`GetReplicaList` 用 `VisitReplicas` 遍历副本，只把通
 
 这三步分别对应第二站、第三站和第四站。测试只覆盖 `PROCESSING` 这一种来源；句柄失效、传输端点失效等分支需要对应的运行证据，不能只凭错误码判断。
 
-**源码延伸：**`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。
+**源码延伸**：`Client::Query`、`GetReplicaList`、`IsReplicaReadable`、以及 `master_service_test.cpp` 中的 `PROCESSING` 用例。
 
 - [Client::Query](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/client_service.cpp#L1211)
 - [MasterService::GetReplicaList](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3626) · [IsReplicaReadable](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/src/master_service.cpp#L3546)

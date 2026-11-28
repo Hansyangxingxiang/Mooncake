@@ -1,6 +1,6 @@
 # 同样的 1024 个前缀 token，第二台推理实例还要重算吗？
 
-**摘要：**推理实例 A 已经算过 1024 个 token 的前缀，推理实例 B 的请求只有后文不同。只要模型、tokenizer、缓存布局和命名空间都兼容，B 就能直接加载这段 KV，不必重算；Mooncake 要做的，是让 B 找得到、读得到这份数据。
+**摘要**：推理实例 A 已经算过 1024 个 token 的前缀，推理实例 B 的请求只有后文不同。只要模型、tokenizer、缓存布局和命名空间都兼容，B 就能直接加载这段 KV，不必重算；Mooncake 要做的，是让 B 找得到、读得到这份数据。
 
 实例 A 刚处理完一份文档。系统提示和文档一共 1024 个 token，A 把这段前缀的 KV 以 key `K` 写进了共享缓存。
 
@@ -97,7 +97,7 @@ Store Master 管业务层：key 对应哪些副本、副本状态、位置与读
 
 这里的共享池解决的是跨实例访问，不等于数据库式持久化。内存副本、SSD 副本和 Master 高可用是三套独立的配置，也要分别验证。
 
-**源码延伸：**`mooncake-store`、`mooncake-transfer-engine`。版本基线为 `v0.3.13.post1`。
+**源码延伸**：`mooncake-store`、`mooncake-transfer-engine`。版本基线为 `v0.3.13.post1`。
 
 - [Client 初始化参数](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/real_client.h#L85)
 - [Store 设计：Master 不接管数据流](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/docs/source/design/store/mooncake-store.md#L76)

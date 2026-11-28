@@ -1,6 +1,6 @@
 # Transfer Engine 返回成功，数据就传完了吗？
 
-**摘要：**一个 batch 跨两个后端提交：后端 A 已接收任务，后端 B 提交失败。错误返回只说明后端 B 没有提交成功；后端 A 已接收的 task 仍可能执行。调用方要等所有 task 到达终态、且 `freeBatchID` 返回 `OK`，才能释放请求描述与数据缓冲区。
+**摘要**：一个 batch 跨两个后端提交：后端 A 已接收任务，后端 B 提交失败。错误返回只说明后端 B 没有提交成功；后端 A 已接收的 task 仍可能执行。调用方要等所有 task 到达终态、且 `freeBatchID` 返回 `OK`，才能释放请求描述与数据缓冲区。
 
 一次传输里，调用方提交了一个跨两个后端的 batch：前两个请求进入后端 A，第三个请求进入后端 B。后端 A 已经接收任务，后端 B 随后提交失败，错误码返回给了调用方。
 
@@ -86,7 +86,7 @@
 
 `BatchBusy` 或其他错误都表示 batch 仍存在；此时请求描述、数据缓冲区和 BatchID 还要继续管理。错误已报告，设备可能仍在访问，这正是过早释放会变成偶现问题的原因。
 
-**源码延伸：**`allocateBatchID`、`submitTransfer`、状态查询与 `freeBatchID`。版本基线为 `v0.3.13.post1`。
+**源码延伸**：`allocateBatchID`、`submitTransfer`、状态查询与 `freeBatchID`。版本基线为 `v0.3.13.post1`。
 
 - [TransferEngine::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transfer_engine.h#L213) · [Status::BatchBusy](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/common/base/status.h#L175) · [BatchID 类型](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/include/transport/transport.h#L53)
 - [MultiTransport::submitTransfer](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L130) · [MultiTransport::freeBatchID](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-transfer-engine/src/multi_transport.cpp#L108)

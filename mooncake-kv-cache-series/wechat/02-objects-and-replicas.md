@@ -1,6 +1,6 @@
 # 一个 KV Cache 对象，在 Mooncake 里到底怎么放？
 
-**摘要：**key K 在 Master 里变成对象元数据，R1、R2 是同一对象的两个副本，各占一段已分配内存。对象说明存什么，副本说明有几份、在哪，Segment 说明空间从哪来，Slice 说明一次搬运按什么单位组织。
+**摘要**：key K 在 Master 里变成对象元数据，R1、R2 是同一对象的两个副本，各占一段已分配内存。对象说明存什么，副本说明有几份、在哪，Segment 说明空间从哪来，Slice 说明一次搬运按什么单位组织。
 
 推理实例 A 算完 1024 个 token 的前缀 KV，把数据以 key `K` 写入共享缓存。
 
@@ -114,7 +114,7 @@ key `K` 进入 Master 后先成为 `ObjectMetadata`；副本 R1、R2 各自记�
 
 判断可读性和回收时，要记住两条边界：对象存在不等于某份副本存在，R1 的空间被回收也不等于 K 被删除；内存副本之外还可能有磁盘副本，但本篇主线仍看 R1、R2。
 
-**源码延伸：**`ObjectMetadata`、`Replica`、`AllocatedBuffer`、`Segment`。版本基线为 `v0.3.13.post1`。
+**源码延伸**：`ObjectMetadata`、`Replica`、`AllocatedBuffer`、`Segment`。版本基线为 `v0.3.13.post1`。
 
 - [ObjectMetadata](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/master_service.h#L1031)
 - [Replica](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/replica.h#L203) · [AllocatedBuffer](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/allocator.h#L39) · [Segment](https://github.com/kvcache-ai/Mooncake/blob/719735896c86b56fabec6cf3e825fb2ea640597a/mooncake-store/include/types.h#L433)
